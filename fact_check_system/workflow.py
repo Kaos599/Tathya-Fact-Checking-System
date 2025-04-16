@@ -11,6 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from pydantic import BaseModel, Field
+import os
 
 from .config import (
     get_primary_llm,
@@ -453,36 +454,32 @@ def fact_check_claim(claim: str, search_depth: int = 3, decompose: bool = True) 
         overall_explanation = sub_claim_results[0]["explanation"]
     
     # Step 8: Format the final answer
-    llm = get_secondary_llm()
-    formatting_chain = (
-        answer_formatting_prompt_template
-        | llm
-        | StrOutputParser()
-    )
+    # llm = get_secondary_llm() # Removed: No longer needed for formatting
     
-    formatting_input = {
-        "claim": claim,
-        "verdict": overall_verdict,
-        "confidence": overall_confidence,
-        "explanation": overall_explanation
-    }
-    
-    formatted_answer = formatting_chain.invoke(formatting_input)
-    
-    # Ensure the explanation is properly formatted
-    if not overall_explanation or overall_explanation == "":
-        overall_explanation = formatted_answer
-    # Only use the formatted answer if it does not contain placeholders
-    elif "{" in formatted_answer and "}" in formatted_answer:
-        logger.warning("Formatted answer contains template variables, using original explanation")
-    else:
-        overall_explanation = formatted_answer
-    
-    # Gather all evidence sources
+    # Gather all evidence sources before formatting
     all_evidence = []
     for sub_result in sub_claim_results:
         if "evidence" in sub_result:
             all_evidence.extend(sub_result["evidence"])
+    
+    # Removed the formatting chain and invocation
+    # formatting_chain = (
+    #     answer_formatting_prompt_template
+    #     | llm
+    #     | StrOutputParser()
+    # )
+    # 
+    # formatting_input = {
+    #     "claim": claim,
+    #     "verdict": overall_verdict,
+    #     "confidence": overall_confidence,
+    #     "explanation": overall_explanation
+    # }
+    # 
+    # formatted_answer = formatting_chain.invoke(formatting_input)
+    # 
+    # # Ensure the explanation is properly formatted - REMOVED THIS LOGIC
+    # # The overall_explanation from the previous step will now be used directly.
     
     # Create and return the final result
     result = FactCheckResult(
@@ -528,14 +525,20 @@ def process_claim(claim: str) -> Dict[str, Any]:
         
         return verdict_dict
     except Exception as e:
-        logger.error(f"Error processing claim: {e}")
-        # Return a default error response
+        logger.error(f"Error processing claim: {e}", exc_info=True)
+        # Return a default error response with a user-friendly message
+        error_message = "An error occurred during fact-checking. This might be due to an API failure or network issue."
+        
+        # Include more details if in development environment
+        if os.getenv("ENVIRONMENT") == "development":
+            error_message += f" Technical details: {str(e)}"
+            
         return {
             "original_claim": claim,
             "claim": claim,
             "verdict": "ERROR",
             "confidence": 0.0,
-            "explanation": f"An error occurred during fact-checking: {str(e)}",
+            "explanation": error_message,
             "evidence": [],
             "sub_claims": []
         } 

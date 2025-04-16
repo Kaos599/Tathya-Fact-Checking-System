@@ -68,7 +68,6 @@ def get_secondary_llm(streaming: bool = False):
             model=GEMINI_MODEL,
             temperature=0.2,
             top_p=0.95,
-            convert_system_message_to_human=True,
             streaming=streaming
         )
     elif AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT:

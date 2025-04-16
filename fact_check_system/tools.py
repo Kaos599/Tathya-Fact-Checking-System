@@ -399,8 +399,7 @@ def url_extraction(text: str) -> List[str]:
 # Add wrapper functions with the names expected by workflow.py
 def tavily_search_tool(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
     """Wrapper for tavily_search function."""
-    search_depth = "basic" if isinstance(max_results, int) else max_results
-    max_results = max_results if isinstance(max_results, int) else 5
+    search_depth = "basic" if max_results <= 5 else "deep"
     return tavily_search.invoke({"query": query, "search_depth": search_depth, "max_results": max_results})
 
 def duckduckgo_search_tool(query: str, max_results: int = 5) -> List[Dict[str, Any]]:

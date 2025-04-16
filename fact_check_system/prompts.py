@@ -99,15 +99,21 @@ fact_verification_prompt_template = ChatPromptTemplate.from_messages([
     - Determine if the claim is TRUE, FALSE, PARTIALLY TRUE, or UNCERTAIN
     - Provide a confidence score from 0.0 to 1.0
     - Explain your reasoning in detail
+    
+    YOU MUST RETURN A VALID JSON OBJECT with the following format and nothing else:
+    {
+      "verdict": "TRUE|FALSE|PARTIALLY TRUE|UNCERTAIN",
+      "confidence": 0.0-1.0,
+      "explanation": "Your detailed explanation without any meta-commentary"
+    }
+    
+    Do not include any text outside of this JSON object.
     """),
     HumanMessage(content="""
     CLAIM: {claim}
     
     EVIDENCE:
-    {evidence}
-    
-    SOURCE RELIABILITY:
-    {source_reliability}
+    {search_results}
     
     Verify this claim based on the provided evidence.
     """)
@@ -125,6 +131,18 @@ final_judgment_prompt_template = ChatPromptTemplate.from_messages([
     - Provide a final verdict: TRUE, FALSE, PARTIALLY TRUE, or UNCERTAIN
     - Assign a confidence score from 0.0 to 1.0
     - Provide a clear, detailed explanation for your verdict
+    - Do NOT include meta-commentary like "Based on my analysis" or "I have examined"
+    - Focus only on the facts and evidence, not on your reasoning process
+    - Do NOT include phrases like "According to the provided information"
+    
+    YOU MUST RETURN A VALID JSON OBJECT with the following format and nothing else:
+    {
+      "verdict": "TRUE|FALSE|PARTIALLY TRUE|UNCERTAIN",
+      "confidence": 0.0-1.0,
+      "explanation": "Your detailed explanation without any meta-commentary"
+    }
+    
+    Do not include any text outside of this JSON object.
     """),
     HumanMessage(content="""
     CLAIM: {claim}
@@ -144,13 +162,23 @@ answer_formatting_prompt_template = ChatPromptTemplate.from_messages([
     SystemMessage(content="""You are a fact-check summarizer. Your task is to format the final fact-check 
     result in a user-friendly manner based on the provided information.
     
-    I will give you a claim, the verdict (TRUE/FALSE/PARTIALLY TRUE/UNCERTAIN), a confidence score, and an explanation.
+    IMPORTANT: DO NOT ACKNOWLEDGE THE REQUEST. DO NOT INCLUDE ANY ACKNOWLEDGMENT PHRASES.
+    DO NOT RESPOND WITH "Okay, I understand" OR ANY SIMILAR PHRASES.
+    
+    I will give you a claim, verdict (TRUE/FALSE/PARTIALLY TRUE/UNCERTAIN), confidence score, and explanation.
     
     Your job is to:
     1. Take the existing explanation and make it concise (if needed)
     2. Focus on the specific claim being checked
     3. Avoid introducing new information not found in the explanation
     4. Use plain language
+    5. Do NOT output template variables like {claim} or {verdict} in your response
+    6. Directly incorporate the values into your text
+    7. NEVER begin with phrases like "Here is" or "I understand" or "The claim that"
+    8. Start directly with the factual assessment
+    
+    OUTPUT FORMAT EXAMPLE:
+    Mars orbits the Sun in the same direction as Earth, but at a different speed and distance. Both planets orbit counterclockwise when viewed from above the north pole of the solar system. Mars is not in a retrograde orbit compared to Earth.
     
     Output ONLY the revised explanation, with no preamble or meta-commentary.
     """),
@@ -163,6 +191,6 @@ answer_formatting_prompt_template = ChatPromptTemplate.from_messages([
     
     EXPLANATION: {explanation}
     
-    Please provide a concise, user-friendly version of this explanation.
+    Format this into a concise, user-friendly explanation.
     """)
 ]) 
