@@ -35,7 +35,10 @@ Tathya follows a multi-agent architecture where specialized agents work collabor
    - Priority ranking of claims based on complexity and importance
 
 2. **Verification Framework**
-   - Multi-source evidence retrieval system (Web, Wikidata, News APIs)
+   - Multi-source evidence retrieval system (Web search engines, Knowledge bases, News APIs)
+   - Multiple search engines including Tavily, DuckDuckGo, and Brave Search
+   - Knowledge bases including Wikidata
+   - News sources including NewsAPI
    - Cross-verification through parallel agent reasoning using different LLMs (Azure OpenAI and Google Gemini)
    - Evidence evaluation and synthesis
 
@@ -53,7 +56,7 @@ Tathya follows a multi-agent architecture where specialized agents work collabor
 ## Key Features
 
 - **Claim Decomposition**: Breaks down complex claims into atomic, verifiable units
-- **Multi-Source Evidence Retrieval**: Gathers evidence from web searches, knowledge bases, and news sources
+- **Multi-Source Evidence Retrieval**: Gathers evidence from multiple web search engines (Tavily, DuckDuckGo, Brave), knowledge bases (Wikidata), and news sources (NewsAPI)
 - **Cross-Verification**: Uses multiple verification agents with different LLMs (Azure OpenAI and Google Gemini) to independently verify claims
 - **Detailed Confidence Scoring**: Provides comprehensive confidence metrics for transparent assessment
 - **API-First Design**: RESTful API for easy integration with other systems
@@ -97,7 +100,20 @@ Tathya follows a multi-agent architecture where specialized agents work collabor
 
 The system requires the following API keys to be set in your `.env` file:
 
-- **Azure OpenAI** (optional):
+- **Required API Keys**:
+  ```
+  GEMINI_API_KEY=your_gemini_api_key
+  GEMINI_MODEL=gemini-1.5-pro
+  NEWS_API_KEY=your_news_api_key
+  ```
+
+- **Search API Keys** (optional, but recommended for better results):
+  ```
+  TAVILY_API_KEY=your_tavily_api_key
+  BRAVE_SEARCH_API_KEY=your_brave_search_api_key
+  ```
+
+- **Azure OpenAI** (optional for secondary verification):
   ```
   AZURE_OPENAI_API_KEY=your_azure_openai_key
   AZURE_OPENAI_ENDPOINT=your_azure_endpoint
@@ -105,16 +121,12 @@ The system requires the following API keys to be set in your `.env` file:
   AZURE_OPENAI_CHAT_DEPLOYMENT_NAME=your_deployment_name
   ```
 
-- **Tavily Search API** (optional):
-  ```
-  TAVILY_API_KEY=your_tavily_api_key
-  ```
-
 You can also configure the system through environment variables:
 
-- `GEMINI_API_KEY`: Google Gemini API key for cross-verification
+- `GEMINI_API_KEY`: Google Gemini API key for primary verification
 - `GEMINI_MODEL`: The specific Gemini model to use (default: gemini-1.5-pro)
 - `NEWS_API_KEY`: News API key for news-based verification
+- `BRAVE_SEARCH_API_KEY`: Brave Search API key for web search
 - `HIGH_CONFIDENCE_THRESHOLD`: Threshold for high confidence (default: 0.8)
 - `MEDIUM_CONFIDENCE_THRESHOLD`: Threshold for medium confidence (default: 0.5)
 - `LOW_CONFIDENCE_THRESHOLD`: Threshold for low confidence (default: 0.3)

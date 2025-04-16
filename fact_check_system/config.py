@@ -1,37 +1,39 @@
 """
-Configuration settings for the fact-checking system.
+Configuration for the fact-checking system.
 """
 
 import os
-from typing import Optional, List, Dict, Any
-from dotenv import load_dotenv
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, BaseMessage
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.callbacks.manager import CallbackManagerForLLMRun
-from langchain_core.outputs import ChatGeneration, ChatResult
-from tavily import TavilyClient
 import requests
-import json
-import google.generativeai as genai
+from typing import Dict, Any, Optional
+import logging
+from dotenv import load_dotenv
+from tavily import TavilyClient
+
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
 
 # Load environment variables
 load_dotenv()
 
-# API Keys and Settings
+# API keys and configurations
 # Azure OpenAI
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION")
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2023-12-01-preview")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+
+# OpenAI
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4")
 
 # Tavily
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
 # Google Gemini
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL")
 
 # News API
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
@@ -48,68 +50,19 @@ LOW_CONFIDENCE_THRESHOLD = float(os.getenv("LOW_CONFIDENCE_THRESHOLD", "0.3"))
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# Mock LLM implementation to avoid API errors
-class MockLLM(BaseChatModel):
-    """Mock LLM implementation for testing without real API access."""
-    
-    def _generate(
-        self,
-        messages: List[BaseMessage],
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
-        **kwargs: Any,
-    ) -> ChatResult:
-        """Generate a mock response based on input messages."""
-        # Concatenate all messages to create a prompt
-        prompt = "\n".join([f"{msg.type}: {msg.content}" for msg in messages])
-        
-        # Create a simple response based on the prompt
-        if "fact-checking" in prompt.lower():
-            response = "This claim is TRUE with a confidence score of 0.9. The evidence strongly supports this statement."
-        elif "claim decomposition" in prompt.lower():
-            response = """I'll break this claim down into its atomic components:
-            
-            {
-              "claims": [
-                {
-                  "id": "1234-5678-abcd",
-                  "statement": "The Earth orbits the Sun",
-                  "entities": ["Earth", "Sun"],
-                  "time_references": [],
-                  "location_references": [],
-                  "numeric_values": [],
-                  "importance": 1.0
-                }
-              ]
-            }
-            """
-        else:
-            response = "I'm a mock LLM response for testing purposes."
-            
-        # Create and return chat result
-        message = AIMessage(content=response)
-        generation = ChatGeneration(message=message)
-        return ChatResult(generations=[generation])
-    
-    @property
-    def _llm_type(self) -> str:
-        return "mock-llm"
-
 # Factory functions for clients
 def get_primary_llm(streaming: bool = False):
     """Get the primary LLM client."""
-    if GEMINI_API_KEY:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(
-            model=GEMINI_MODEL,
-            temperature=0.1,
-            top_p=0.95,
-            convert_system_message_to_human=True,
-            streaming=streaming
+    if AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT:
+        from langchain_openai import AzureChatOpenAI
+        return AzureChatOpenAI(
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            openai_api_version=AZURE_OPENAI_API_VERSION,
+            deployment_name=AZURE_OPENAI_DEPLOYMENT,
+            openai_api_key=AZURE_OPENAI_API_KEY,
         )
     else:
-        print("Warning: Using MockLLM because GEMINI_API_KEY is not set")
-        return MockLLM()
+        raise ValueError("AZURE_OPENAI_API_KEY or AZURE_OPENAI_ENDPOINT not set. Cannot create primary LLM client.")
 
 def get_secondary_llm(streaming: bool = False):
     """Get the secondary LLM client."""
@@ -117,18 +70,40 @@ def get_secondary_llm(streaming: bool = False):
         from langchain_google_genai import ChatGoogleGenerativeAI
         return ChatGoogleGenerativeAI(
             model=GEMINI_MODEL,
-            temperature=0.2,  # Slightly higher temperature for diversity
+            temperature=0.2,
             top_p=0.95,
             convert_system_message_to_human=True,
             streaming=streaming
         )
+    elif AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT:
+        from langchain_openai import AzureChatOpenAI
+        return AzureChatOpenAI(
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            openai_api_version=AZURE_OPENAI_API_VERSION,
+            deployment_name=AZURE_OPENAI_DEPLOYMENT,
+            openai_api_key=AZURE_OPENAI_API_KEY,
+        )
     else:
-        print("Warning: Using MockLLM because GEMINI_API_KEY is not set")
-        return MockLLM()
+        raise ValueError("No API keys available for secondary LLM client.")
 
 def get_tavily_client():
     """Get the Tavily search client."""
+    if not TAVILY_API_KEY:
+        raise ValueError("TAVILY_API_KEY not set. Cannot create Tavily client.")
     return TavilyClient(api_key=TAVILY_API_KEY)
+
+def get_duckduckgo_client():
+    """Get the DuckDuckGo search client."""
+    from duckduckgo_search import DDGS
+    return DDGS()
+
+def get_news_api_client():
+    """Get the NewsAPI client."""
+    if not NEWS_API_KEY:
+        raise ValueError("NEWS_API_KEY not set. Cannot create NewsAPI client.")
+    
+    from newsapi import NewsApiClient
+    return NewsApiClient(api_key=NEWS_API_KEY)
 
 def get_wikidata_client():
     """Get a function to query the Wikidata API."""
