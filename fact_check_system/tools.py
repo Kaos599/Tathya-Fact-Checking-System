@@ -401,28 +401,28 @@ def tavily_search_tool(query: str, max_results: int = 5) -> List[Dict[str, Any]]
     """Wrapper for tavily_search function."""
     search_depth = "basic" if isinstance(max_results, int) else max_results
     max_results = max_results if isinstance(max_results, int) else 5
-    return tavily_search(query, search_depth, max_results)
+    return tavily_search.invoke({"query": query, "search_depth": search_depth, "max_results": max_results})
 
 def duckduckgo_search_tool(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
     """Wrapper for duckduckgo_search function."""
-    return duckduckgo_search(query, max_results)
+    return duckduckgo_search.invoke({"query": query, "max_results": max_results})
 
 def news_api_search_tool(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
     """Wrapper for news_search function."""
-    return news_search(query, language="en", page_size=max_results)
+    return news_search.invoke({"query": query, "language": "en", "page_size": max_results})
 
 def wikidata_tool(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
     """Wrapper for wikidata_entity_search function."""
-    return wikidata_entity_search(query, limit=max_results)
+    return wikidata_entity_search.invoke({"query": query, "limit": max_results})
 
 def entity_extraction_tool(text: str) -> List[str]:
     """Wrapper for entity_extraction function."""
-    return entity_extraction(text)
+    return entity_extraction.invoke({"text": text})
 
 def date_extraction_tool(text: str) -> List[str]:
     """Wrapper for date_extraction function."""
-    return date_extraction(text)
+    return date_extraction.invoke({"text": text})
 
 def url_extraction_tool(text: str) -> List[str]:
     """Wrapper for url_extraction function."""
-    return url_extraction(text) 
+    return url_extraction.invoke({"text": text}) 

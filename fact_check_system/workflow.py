@@ -175,7 +175,7 @@ def fact_check_claim(claim: str, search_depth: int = 3, decompose: bool = True) 
         
         # Tavily search
         try:
-            tavily_results = tavily_search_tool(primary_query, search_depth)
+            tavily_results = tavily_search_tool(primary_query, max_results=search_depth)
             for result in tavily_results:
                 result["source"] = "Tavily"
             all_search_results.extend(tavily_results)
@@ -185,7 +185,7 @@ def fact_check_claim(claim: str, search_depth: int = 3, decompose: bool = True) 
         
         # DuckDuckGo search
         try:
-            ddg_results = duckduckgo_search_tool(primary_query, search_depth)
+            ddg_results = duckduckgo_search_tool(primary_query, max_results=search_depth)
             for result in ddg_results:
                 result["source"] = "DuckDuckGo"
             all_search_results.extend(ddg_results)
@@ -215,7 +215,7 @@ def fact_check_claim(claim: str, search_depth: int = 3, decompose: bool = True) 
             # Check if the claim might be about recent events
             recent_dates = [d for d in dates if "2023" in d or "2024" in d]
             if recent_dates or any(term in sub_claim.lower() for term in ["recent", "latest", "new", "current"]):
-                news_results = news_api_search_tool(primary_query, search_depth)
+                news_results = news_api_search_tool(primary_query, max_results=search_depth)
                 for result in news_results:
                     result["source"] = "NewsAPI"
                 all_search_results.extend(news_results)
@@ -464,8 +464,7 @@ def fact_check_claim(claim: str, search_depth: int = 3, decompose: bool = True) 
         "claim": claim,
         "verdict": overall_verdict,
         "confidence": overall_confidence,
-        "explanation": overall_explanation,
-        "sub_claim_results": sub_claim_results if len(sub_claim_results) > 1 else []
+        "explanation": overall_explanation
     }
     
     formatted_answer = formatting_chain.invoke(formatting_input)
@@ -473,11 +472,17 @@ def fact_check_claim(claim: str, search_depth: int = 3, decompose: bool = True) 
     # Ensure the explanation is properly formatted
     if not overall_explanation or overall_explanation == "":
         overall_explanation = formatted_answer
+    # Only use the formatted answer if it does not contain placeholders
+    elif "{" in formatted_answer and "}" in formatted_answer:
+        logger.warning("Formatted answer contains template variables, using original explanation")
+    else:
+        overall_explanation = formatted_answer
     
     # Gather all evidence sources
     all_evidence = []
     for sub_result in sub_claim_results:
-        all_evidence.extend(sub_result["evidence"])
+        if "evidence" in sub_result:
+            all_evidence.extend(sub_result["evidence"])
     
     # Create and return the final result
     result = FactCheckResult(
@@ -512,6 +517,7 @@ def process_claim(claim: str) -> Dict[str, Any]:
         
         # Convert to dictionary format expected by manual_query.py
         verdict_dict = {
+            "original_claim": claim,
             "claim": result.claim,
             "verdict": result.verdict,
             "confidence": result.confidence,
@@ -525,6 +531,7 @@ def process_claim(claim: str) -> Dict[str, Any]:
         logger.error(f"Error processing claim: {e}")
         # Return a default error response
         return {
+            "original_claim": claim,
             "claim": claim,
             "verdict": "ERROR",
             "confidence": 0.0,

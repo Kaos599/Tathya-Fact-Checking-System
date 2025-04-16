@@ -142,15 +142,17 @@ final_judgment_prompt_template = ChatPromptTemplate.from_messages([
 # Answer formatting prompt
 answer_formatting_prompt_template = ChatPromptTemplate.from_messages([
     SystemMessage(content="""You are a fact-check summarizer. Your task is to format the final fact-check 
-    result in a clear, concise, and user-friendly manner.
+    result in a user-friendly manner based on the provided information.
     
-    Guidelines:
-    - Provide a clear verdict (TRUE, FALSE, PARTIALLY TRUE, or UNCERTAIN)
-    - Summarize the key evidence in 2-3 sentences
-    - Highlight the most reliable sources used
-    - Use bullet points for key facts when appropriate
-    - Present any nuances or caveats in the conclusion
-    - Use plain, accessible language
+    I will give you a claim, the verdict (TRUE/FALSE/PARTIALLY TRUE/UNCERTAIN), a confidence score, and an explanation.
+    
+    Your job is to:
+    1. Take the existing explanation and make it concise (if needed)
+    2. Focus on the specific claim being checked
+    3. Avoid introducing new information not found in the explanation
+    4. Use plain language
+    
+    Output ONLY the revised explanation, with no preamble or meta-commentary.
     """),
     HumanMessage(content="""
     CLAIM: {claim}
@@ -161,8 +163,6 @@ answer_formatting_prompt_template = ChatPromptTemplate.from_messages([
     
     EXPLANATION: {explanation}
     
-    EVIDENCE: {evidence}
-    
-    Format this fact-check result for presentation to the user.
+    Please provide a concise, user-friendly version of this explanation.
     """)
 ]) 
