@@ -11,8 +11,10 @@ from tavily import TavilyClient
 
 try:
     import google.generativeai as genai
+    from langchain_google_genai import ChatGoogleGenerativeAI
 except ImportError:
     genai = None
+    ChatGoogleGenerativeAI = None
 
 # Load environment variables
 load_dotenv()
@@ -80,6 +82,20 @@ def get_secondary_llm(streaming: bool = False):
         )
     else:
         raise ValueError("No API keys available for secondary LLM client.")
+
+def get_gemini_llm(streaming: bool = False):
+    """Get the Google Gemini LLM client."""
+    if not ChatGoogleGenerativeAI:
+        raise ImportError("Could not import ChatGoogleGenerativeAI. Make sure langchain-google-genai is installed.")
+    if GEMINI_API_KEY and GEMINI_MODEL:
+        return ChatGoogleGenerativeAI(
+            model=GEMINI_MODEL,
+            google_api_key=GEMINI_API_KEY,
+            temperature=0.3,
+            top_p=0.9,
+        )
+    else:
+        raise ValueError("GEMINI_API_KEY or GEMINI_MODEL not set. Cannot create Gemini LLM client.")
 
 def get_tavily_client():
     """Get the Tavily search client."""

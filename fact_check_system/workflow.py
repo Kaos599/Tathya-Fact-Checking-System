@@ -5,6 +5,7 @@ Main workflow for the fact-checking system.
 import time
 import re
 import json
+import datetime
 from typing import List, Dict, Any, Optional, Tuple
 import logging
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -16,6 +17,7 @@ import os
 from .config import (
     get_primary_llm,
     get_secondary_llm,
+    get_gemini_llm,
     get_tavily_client,
     get_duckduckgo_client,
     get_news_api_client,
@@ -32,7 +34,11 @@ from .prompts import (
     credibility_assessment_prompt_template,
     source_reliability_prompt_template,
     search_query_reformulation_prompt_template,
-    final_judgment_prompt_template
+    final_judgment_prompt_template,
+    gemini_cross_check_prompt_template,
+    question_generation_prompt_template,
+    question_answering_prompt_template,
+    verdict_synthesis_prompt_template
 )
 from .tools import (
     tavily_search_tool,
@@ -59,6 +65,9 @@ class FactCheckResult(BaseModel):
     explanation: str = Field(..., description="Detailed explanation of the fact-check")
     evidence: List[Dict[str, Any]] = Field(..., description="Evidence sources used")
     sub_claims: Optional[List[Dict[str, Any]]] = Field(None, description="Decomposed sub-claims if applicable")
+    cross_check_verdict: Optional[str] = Field(None, description="Verdict from Gemini cross-check")
+    cross_check_confidence: Optional[float] = Field(None, description="Confidence from Gemini cross-check")
+    cross_check_explanation: Optional[str] = Field(None, description="Explanation from Gemini cross-check")
 
 def fact_check_claim(claim: str, search_depth: int = 3, decompose: bool = True) -> FactCheckResult:
     """
@@ -351,10 +360,44 @@ def fact_check_claim(claim: str, search_depth: int = 3, decompose: bool = True) 
             | StrOutputParser()
         )
         
+        # Log the input being sent to the verification LLM
+        logger.debug(f"--- Verification Input for Sub-claim {sub_claim_id} ---")
+        logger.debug(f"Claim: {sub_claim}")
+        # Log evidence carefully, potentially large
+        try:
+            evidence_preview = json.dumps(top_results, indent=2, default=datetime_serializer)[:2000] # Log preview
+            logger.debug(f"Evidence (Preview):\n{evidence_preview}...") 
+        except Exception as log_e:
+            logger.debug(f"Evidence (Preview): [Error logging evidence: {log_e}]")
+        logger.debug("--------------------------------------------------")
+        
         verification_input = {
             "claim": sub_claim,
             "search_results": top_results
         }
+        
+        # Direct print statements for debugging (guaranteed to appear in console)
+        print("\n" + "="*80)
+        print(f"SENDING TO PRIMARY LLM FOR VERIFICATION:")
+        print(f"CLAIM: {sub_claim}")
+        print("-"*40)
+        print(f"EVIDENCE SAMPLE (first 2 results only):")
+        if len(top_results) > 0:
+            try:
+                print(f"Result 1: {top_results[0].get('title', 'No title')} | URL: {top_results[0].get('url', 'No URL')}")
+                print(f"Content snippet: {top_results[0].get('content', top_results[0].get('snippet', 'No content'))[:200]}...")
+            except Exception as e:
+                print(f"Error displaying first result: {e}")
+                
+            if len(top_results) > 1:
+                try:
+                    print(f"Result 2: {top_results[1].get('title', 'No title')} | URL: {top_results[1].get('url', 'No URL')}")
+                    print(f"Content snippet: {top_results[1].get('content', top_results[1].get('snippet', 'No content'))[:200]}...")
+                except Exception as e:
+                    print(f"Error displaying second result: {e}")
+        else:
+            print("No evidence available!")
+        print("="*80 + "\n")
         
         verification_result = verification_chain.invoke(verification_input)
         logger.info(f"Completed verification for sub-claim {sub_claim_id}")
@@ -389,6 +432,11 @@ def fact_check_claim(claim: str, search_depth: int = 3, decompose: bool = True) 
             logger.warning(f"Failed to parse verification result: {e}")
             # Use the full verification result as the explanation
             explanation = verification_result
+        
+        # Adjust confidence if UNCERTAIN and 0.0
+        if verdict == "UNCERTAIN" and confidence == 0.0:
+            confidence = 0.1 # Set to a low non-zero value
+            logger.info("Adjusted 0.0 confidence for UNCERTAIN verdict to 0.1")
         
         # Store the sub-claim result
         sub_claim_result = {
@@ -453,33 +501,93 @@ def fact_check_claim(claim: str, search_depth: int = 3, decompose: bool = True) 
         overall_confidence = sub_claim_results[0]["confidence"]
         overall_explanation = sub_claim_results[0]["explanation"]
     
+    # Adjust final confidence if UNCERTAIN and 0.0 (after potential judgment)
+    if overall_verdict == "UNCERTAIN" and overall_confidence == 0.0:
+        overall_confidence = 0.1 # Set to a low non-zero value
+        logger.info("Adjusted final 0.0 confidence for UNCERTAIN verdict to 0.1")
+    
+    # Helper function to serialize datetime objects for JSON
+    def datetime_serializer(obj):
+        if isinstance(obj, datetime.datetime):
+            return obj.isoformat()
+        raise TypeError(f"Type {type(obj)} not serializable")
+    
+    # Step 7.5: Perform Gemini Cross-Check
+    cross_check_verdict = None
+    cross_check_confidence = None
+    cross_check_explanation = None
+    try:
+        gemini_llm = get_gemini_llm()
+        cross_check_chain = (
+            gemini_cross_check_prompt_template
+            | gemini_llm
+            | StrOutputParser()
+        )
+        
+        # Gather all evidence sources before formatting
+        all_evidence = []
+        for sub_result in sub_claim_results:
+            if "evidence" in sub_result:
+                all_evidence.extend(sub_result["evidence"])
+        
+        # Prepare evidence for the prompt (limit length if necessary)
+        try:
+            evidence_str = json.dumps(all_evidence, indent=2, default=datetime_serializer)[:10000] # Limit evidence length
+        except TypeError as e:
+            logger.error(f"Failed to serialize evidence for Gemini: {e}. Trying basic serialization.")
+            # Fallback: attempt basic serialization, might still fail if other types exist
+            evidence_str = json.dumps([str(item) for item in all_evidence])[:10000] 
+        
+        cross_check_input = {
+            "claim": claim,
+            "evidence": evidence_str,
+            "initial_verdict": overall_verdict,
+            "initial_explanation": overall_explanation
+        }
+        
+        # Direct print statements for debugging (guaranteed to appear in console)
+        print("\n" + "="*80)
+        print(f"SENDING TO GEMINI FOR CROSS-CHECK:")
+        print(f"CLAIM: {claim}")
+        print(f"INITIAL VERDICT: {overall_verdict}")
+        print(f"INITIAL EXPLANATION: {overall_explanation[:300]}...")
+        print("-"*40)
+        print(f"EVIDENCE SAMPLE (first 200 chars):")
+        if evidence_str:
+            print(f"{evidence_str[:200]}...")
+        else:
+            print("No evidence string available!")
+        print("="*80 + "\n")
+        
+        logger.info("Performing Gemini cross-check...")
+        cross_check_result_raw = cross_check_chain.invoke(cross_check_input)
+        logger.info("Completed Gemini cross-check.")
+        
+        # Parse Gemini's response (similar to parsing verification/judgment)
+        try:
+            if cross_check_result_raw.strip().startswith("{") and cross_check_result_raw.strip().endswith("}"):
+                parsed_cross_check = json.loads(cross_check_result_raw)
+                cross_check_verdict = parsed_cross_check.get("verdict", "UNCERTAIN")
+                cross_check_confidence = float(parsed_cross_check.get("confidence", 0.5))
+                cross_check_explanation = parsed_cross_check.get("explanation", "")
+                logger.info(f"Gemini cross-check result: Verdict={cross_check_verdict}, Confidence={cross_check_confidence:.2f}")
+            else:
+                logger.warning("Gemini cross-check did not return valid JSON. Using raw output as explanation.")
+                # Simplified fallback: Use raw output and default values
+                cross_check_verdict = "UNCERTAIN" # Default verdict if parsing fails
+                cross_check_confidence = 0.5 # Default confidence if parsing fails
+                cross_check_explanation = cross_check_result_raw # Store raw output
+                logger.info(f"Gemini cross-check fallback: Verdict={cross_check_verdict}, Confidence={cross_check_confidence:.2f}")
+        except Exception as parse_e:
+            logger.warning(f"Failed to parse Gemini cross-check result: {parse_e}")
+            cross_check_explanation = cross_check_result_raw
+            
+    except Exception as gemini_e:
+        logger.error(f"Error during Gemini cross-check: {gemini_e}")
+        cross_check_explanation = f"Gemini cross-check failed: {str(gemini_e)}"
+    
     # Step 8: Format the final answer
     # llm = get_secondary_llm() # Removed: No longer needed for formatting
-    
-    # Gather all evidence sources before formatting
-    all_evidence = []
-    for sub_result in sub_claim_results:
-        if "evidence" in sub_result:
-            all_evidence.extend(sub_result["evidence"])
-    
-    # Removed the formatting chain and invocation
-    # formatting_chain = (
-    #     answer_formatting_prompt_template
-    #     | llm
-    #     | StrOutputParser()
-    # )
-    # 
-    # formatting_input = {
-    #     "claim": claim,
-    #     "verdict": overall_verdict,
-    #     "confidence": overall_confidence,
-    #     "explanation": overall_explanation
-    # }
-    # 
-    # formatted_answer = formatting_chain.invoke(formatting_input)
-    # 
-    # # Ensure the explanation is properly formatted - REMOVED THIS LOGIC
-    # # The overall_explanation from the previous step will now be used directly.
     
     # Create and return the final result
     result = FactCheckResult(
@@ -488,7 +596,10 @@ def fact_check_claim(claim: str, search_depth: int = 3, decompose: bool = True) 
         confidence=overall_confidence,
         explanation=overall_explanation,
         evidence=all_evidence,
-        sub_claims=sub_claim_results if len(sub_claim_results) > 1 else None
+        sub_claims=sub_claim_results if len(sub_claim_results) > 1 else None,
+        cross_check_verdict=cross_check_verdict,
+        cross_check_confidence=cross_check_confidence,
+        cross_check_explanation=cross_check_explanation
     )
     
     logger.info(f"Completed fact-check for claim with verdict: {overall_verdict}, confidence: {overall_confidence:.2f}")
@@ -510,7 +621,7 @@ def process_claim(claim: str) -> Dict[str, Any]:
     
     try:
         # Perform fact-checking
-        result = fact_check_claim(claim)
+        result = fact_check_claim_v2(claim)
         
         # Convert to dictionary format expected by manual_query.py
         verdict_dict = {
@@ -520,7 +631,10 @@ def process_claim(claim: str) -> Dict[str, Any]:
             "confidence": result.confidence,
             "explanation": result.explanation,
             "evidence": result.evidence,
-            "sub_claims": result.sub_claims if result.sub_claims else []
+            "sub_claims": result.sub_claims if result.sub_claims else [],
+            "cross_check_verdict": result.cross_check_verdict,
+            "cross_check_confidence": result.cross_check_confidence,
+            "cross_check_explanation": result.cross_check_explanation
         }
         
         return verdict_dict
@@ -540,5 +654,240 @@ def process_claim(claim: str) -> Dict[str, Any]:
             "confidence": 0.0,
             "explanation": error_message,
             "evidence": [],
-            "sub_claims": []
-        } 
+            "sub_claims": [],
+            "cross_check_verdict": None,
+            "cross_check_confidence": None,
+            "cross_check_explanation": None
+        }
+
+# ----------------------------------------------------------------------------------
+# New Question‑Driven Fact‑Checking Pipeline (v2)
+# ----------------------------------------------------------------------------------
+
+def fact_check_claim_v2(claim: str, search_depth: int = 5, num_questions: int = 10) -> FactCheckResult:
+    """
+    Overhauled pipeline implementing the following steps:
+      1) Interpret the claim and pose *exactly* `num_questions` investigative questions.
+      2) For each question, generate search queries, gather evidence from Wikidata, DuckDuckGo, Tavily and others.
+      3) Answer each question individually based on the evidence.
+      4) After all questions are answered, synthesise an overall verdict & justification.
+      5) Optionally perform Gemini cross‑check (reuse existing logic).
+    """
+    logger.info("Starting V2 fact‑check for claim: %s", claim)
+
+    primary_llm = get_primary_llm()
+
+    # STEP 1: Generate investigative questions
+    question_chain = (
+        question_generation_prompt_template
+        | primary_llm
+        | StrOutputParser()
+    )
+    questions_raw = question_chain.invoke({"claim": claim})
+
+    # Parse questions (expect numbered list)
+    questions: List[str] = []
+    try:
+        if questions_raw.strip().startswith("["):
+            questions = json.loads(questions_raw)
+        else:
+            matches = re.findall(r"(?:^|\n)\d+\.\s*(.*?)(?=\n\d+\.|$)", questions_raw, re.DOTALL)
+            questions = [q.strip() for q in matches if q.strip()]
+    except Exception as e:
+        logger.warning("Failed to parse questions: %s", e)
+
+    # Fallback: ensure list length
+    if not questions:
+        questions = [questions_raw.strip()]
+    if len(questions) > num_questions:
+        questions = questions[:num_questions]
+    while len(questions) < num_questions:
+        questions.append(questions[-1])  # duplicate last to keep length (should rarely happen)
+
+    logger.info("Generated %d investigative questions", len(questions))
+
+    secondary_llm = get_secondary_llm()
+
+    qa_pairs = []  # store answers and evidence per question
+    all_evidence = []
+
+    # Helper to gather evidence for a query
+    def gather_evidence(query: str) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        # Tavily
+        try:
+            tav = tavily_search_tool(query, max_results=search_depth)
+            for r in tav: r["source"] = "Tavily"
+            results.extend(tav)
+        except Exception as e:
+            logger.error("Tavily search error: %s", e)
+        # DuckDuckGo
+        try:
+            ddg = duckduckgo_search_tool(query, max_results=search_depth)
+            for r in ddg: r["source"] = "DuckDuckGo"
+            results.extend(ddg)
+        except Exception as e:
+            logger.error("DDG search error: %s", e)
+        # Wikidata
+        try:
+            wiki = wikidata_tool(query, max_results=search_depth)
+            for r in wiki: r["source"] = "Wikidata"
+            results.extend(wiki)
+        except Exception as e:
+            logger.error("Wikidata search error: %s", e)
+        # Deduplicate by URL
+        seen = set()
+        dedup = []
+        for r in results:
+            url = r.get("url")
+            if url and url not in seen:
+                dedup.append(r)
+                seen.add(url)
+        return dedup[:search_depth*3]  # limit
+
+    # Process each question
+    for idx, question in enumerate(questions, start=1):
+        logger.info("Processing question %d: %s", idx, question)
+
+        # STEP 2a: Generate search queries for the question
+        reform_chain = (
+            search_query_reformulation_prompt_template
+            | primary_llm
+            | StrOutputParser()
+        )
+        q_queries_text = reform_chain.invoke({
+            "claim": question,
+            "entities": [],
+            "dates": [],
+            "urls": []
+        })
+        q_queries: List[str] = []
+        try:
+            if q_queries_text.strip().startswith("["):
+                q_queries = json.loads(q_queries_text)
+            else:
+                q_queries = re.findall(r"(?:^|\n)\d+\.\s*(.*?)(?=\n\d+\.|$)", q_queries_text, re.DOTALL)
+                q_queries = [s.strip() for s in q_queries if s.strip()]
+        except Exception as e:
+            logger.warning("Failed to parse search queries for question %d: %s", idx, e)
+
+        if not q_queries:
+            q_queries = [question]
+
+        # STEP 3: Retrieve evidence for each query (limit to first 2 queries to save cost)
+        evidence_for_question = []
+        for q in q_queries[:2]:
+            evidence_for_question.extend(gather_evidence(q))
+
+        # Keep top N by credibility + relevance
+        evidence_for_question.sort(key=lambda x: (x.get("credibility_score", 0)+x.get("relevance_score", 0)), reverse=True)
+        evidence_snippets = evidence_for_question[:8]
+        all_evidence.extend(evidence_snippets)
+
+        # Prepare evidence string (truncate to avoid context blow‑up)
+        def safe_serialize(obj):
+            if isinstance(obj, datetime.datetime):
+                return obj.isoformat()
+            return str(obj)
+        ev_str = json.dumps(evidence_snippets, default=safe_serialize)[:6000]
+
+        # STEP 4: Answer the question using evidence
+        qa_chain = (
+            question_answering_prompt_template
+            | secondary_llm
+            | StrOutputParser()
+        )
+        answer_raw = qa_chain.invoke({
+            "question": question,
+            "evidence": ev_str
+        })
+
+        # Parse answer JSON
+        answer_json = {
+            "answer": answer_raw,
+            "verdict_component": "INSUFFICIENT",
+            "confidence": 0.0,
+            "explanation": "Parsing failed"
+        }
+        try:
+            if answer_raw.strip().startswith("{"):
+                answer_json = json.loads(answer_raw)
+        except Exception as e:
+            logger.warning("Failed to parse answer JSON for question %d: %s", idx, e)
+
+        qa_pairs.append({
+            "question": question,
+            "answer": answer_json.get("answer"),
+            "verdict_component": answer_json.get("verdict_component"),
+            "confidence": answer_json.get("confidence"),
+            "explanation": answer_json.get("explanation"),
+            "evidence": evidence_snippets
+        })
+
+    # STEP 5: Synthesize final verdict
+    synthesis_chain = (
+        verdict_synthesis_prompt_template
+        | primary_llm
+        | StrOutputParser()
+    )
+
+    qa_pairs_serialized = json.dumps(qa_pairs, default=lambda o: str(o))[:10000]
+    synthesis_raw = synthesis_chain.invoke({
+        "claim": claim,
+        "qa_pairs": qa_pairs_serialized
+    })
+
+    overall_verdict = "UNCERTAIN"
+    overall_confidence = 0.0
+    overall_explanation = synthesis_raw
+    try:
+        if synthesis_raw.strip().startswith("{"):
+            parsed = json.loads(synthesis_raw)
+            overall_verdict = parsed.get("verdict", overall_verdict)
+            overall_confidence = float(parsed.get("confidence", 0.5))
+            overall_explanation = parsed.get("explanation", overall_explanation)
+    except Exception as e:
+        logger.warning("Failed to parse synthesis result: %s", e)
+
+    # STEP 6: Gemini cross‑check (reuse existing helper)
+    cross_check_verdict = cross_check_confidence = cross_check_explanation = None
+    try:
+        gemini_llm = get_gemini_llm()
+        cross_check_chain = (
+            gemini_cross_check_prompt_template
+            | gemini_llm
+            | StrOutputParser()
+        )
+        evidence_str = json.dumps(all_evidence, default=lambda o: str(o))[:10000]
+        cross_in = {
+            "claim": claim,
+            "evidence": evidence_str,
+            "initial_verdict": overall_verdict,
+            "initial_explanation": overall_explanation
+        }
+        cross_raw = cross_check_chain.invoke(cross_in)
+        if cross_raw.strip().startswith("{"):
+            cross = json.loads(cross_raw)
+            cross_check_verdict = cross.get("verdict")
+            cross_check_confidence = float(cross.get("confidence", 0.5))
+            cross_check_explanation = cross.get("explanation")
+        else:
+            cross_check_explanation = cross_raw
+    except Exception as e:
+        logger.warning("Gemini cross‑check failed: %s", e)
+
+    # Build result dataclass
+    result = FactCheckResult(
+        claim=claim,
+        verdict=overall_verdict,
+        confidence=overall_confidence,
+        explanation=overall_explanation,
+        evidence=all_evidence,
+        sub_claims=qa_pairs,  # using this field to store question answers
+        cross_check_verdict=cross_check_verdict,
+        cross_check_confidence=cross_check_confidence,
+        cross_check_explanation=cross_check_explanation
+    )
+
+    logger.info("Completed V2 fact‑check with verdict: %s", overall_verdict)
+    return result 

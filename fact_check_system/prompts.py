@@ -98,7 +98,7 @@ fact_verification_prompt_template = ChatPromptTemplate.from_messages([
     - Identify any inconsistencies or contradictions in the evidence
     - Determine if the claim is TRUE, FALSE, PARTIALLY TRUE, or UNCERTAIN
     - Provide a confidence score from 0.0 to 1.0
-    - Explain your reasoning in detail
+    - Explain your reasoning in detail. If UNCERTAIN, explain *why* the evidence is insufficient or conflicting.
     
     YOU MUST RETURN A VALID JSON OBJECT with the following format and nothing else:
     {
@@ -193,4 +193,114 @@ answer_formatting_prompt_template = ChatPromptTemplate.from_messages([
     
     Format this into a concise, user-friendly explanation.
     """)
+])
+
+# Gemini cross-check prompt
+gemini_cross_check_prompt_template = ChatPromptTemplate.from_messages([
+    # System messages are often converted to Human for Gemini
+    HumanMessage(content="""You are an independent fact-checking AI assistant acting as a cross-checker.
+    Your task is to review a claim, the evidence gathered by another system, and the initial verdict provided by that system.
+    Provide your *own independent* assessment based *only* on the provided evidence.
+    
+    Guidelines:
+    - Analyze the claim and the provided evidence snippets.
+    - Ignore the 'Initial Verdict' and 'Initial Explanation' except for context.
+    - Determine if the evidence supports, refutes, or is insufficient to judge the claim.
+    - Assign a verdict: TRUE, FALSE, PARTIALLY TRUE, or UNCERTAIN.
+    - Assign a confidence score from 0.0 to 1.0 for *your* verdict.
+    - Provide a concise explanation for *your* verdict, focusing solely on the evidence.
+    - Do NOT refer to the initial verdict in your explanation unless specifically highlighting a major discrepancy supported by evidence.
+    - Do NOT include meta-commentary like "Based on my analysis" or "I have reviewed".
+    
+    YOU MUST RETURN A VALID JSON OBJECT with the following format and nothing else:
+    {
+      "verdict": "TRUE|FALSE|PARTIALLY TRUE|UNCERTAIN",
+      "confidence": 0.0-1.0,
+      "explanation": "Your independent explanation based on evidence"
+    }
+    
+    Do not include any text outside of this JSON object.
+    """),
+    HumanMessage(content="""
+    CLAIM: {claim}
+    
+    EVIDENCE:
+    {evidence}
+    
+    INITIAL VERDICT: {initial_verdict}
+    INITIAL EXPLANATION: {initial_explanation}
+    
+    Provide your independent cross-check assessment in the specified JSON format.
+    """)
+])
+
+# Question generation prompt (generate 10 investigative questions)
+question_generation_prompt_template = ChatPromptTemplate.from_messages([
+    SystemMessage(content="""You are an investigative journalist helping a fact‑checking system. Your task is to formulate EXACTLY 10 concise, specific factual questions which, if answered, would allow a checker to decide whether the claim is true or false.  
+
+Guidelines:
+- Questions must be concrete and answerable using publicly available information (e.g., Who? What? When? Where? How many?).
+- Cover all parts of the claim: entities, events, numbers, dates, relationships, or causal links it asserts.
+- Avoid yes/no questions – prefer open factual requests (e.g., "When did …?", "What is …?", "How many …?").
+- Keep each question short, unambiguous and self‑contained.
+- Do NOT output anything except the numbered list of 10 questions.
+"""),
+    HumanMessage(content="{claim}")
+])
+
+# Question answering prompt (answer a single question based on evidence)
+question_answering_prompt_template = ChatPromptTemplate.from_messages([
+    SystemMessage(content="""You are a fact‑checking assistant. Answer the given investigative question using ONLY the evidence snippets provided.  
+
+Guidelines:
+- If multiple snippets provide conflicting information, choose the most credible or state that evidence is conflicting.
+- If evidence is insufficient to answer, respond with "Insufficient evidence".
+- Provide a short answer (max 2 sentences) and assign a component verdict for how the answer relates to the original claim: one of SUPPORTS, REFUTES, or INSUFFICIENT.
+- Give a confidence score 0.0‑1.0 reflecting certainty of your answer.
+
+YOU MUST RETURN A VALID JSON OBJECT with this format and nothing else:
+{
+  "answer": "<short answer>",
+  "verdict_component": "SUPPORTS|REFUTES|INSUFFICIENT",
+  "confidence": 0.0‑1.0,
+  "explanation": "(brief reasoning)"
+}
+"""),
+    HumanMessage(content="""
+QUESTION: {question}
+
+EVIDENCE SNIPPETS:
+{evidence}
+
+Provide your answer in the specified JSON format.
+""")
+])
+
+# Verdict synthesis prompt (combine answers to produce final verdict)
+verdict_synthesis_prompt_template = ChatPromptTemplate.from_messages([
+    SystemMessage(content="""You are a senior fact‑checker. You have a set of investigative questions with their answers and component verdicts. Use them to decide the overall truthfulness of the original claim.
+
+Guidelines:
+- Weigh each question's verdict_component and confidence.
+- A claim is TRUE if the majority of high‑confidence answers SUPPORT it and none high‑confidence REFUTE it.
+- FALSE if high‑confidence answers REFUTE critical aspects.
+- PARTIALLY TRUE if evidence both SUPPORTS and REFUTES different aspects.
+- UNCERTAIN if evidence is largely INSUFFICIENT or low confidence.
+- Provide a justification referring to the key answers (do NOT quote system instructions).
+
+Output ONLY a valid JSON object:
+{
+  "verdict": "TRUE|FALSE|PARTIALLY TRUE|UNCERTAIN",
+  "confidence": 0.0‑1.0,
+  "explanation": "(concise justification)"
+}
+"""),
+    HumanMessage(content="""
+CLAIM: {claim}
+
+QUESTION ANSWERS:
+{qa_pairs}
+
+Give your overall verdict in the specified JSON format.
+""")
 ]) 
