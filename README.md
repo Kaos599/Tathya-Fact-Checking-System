@@ -33,7 +33,7 @@ The Tathya Fact Checking System follows a pipeline architecture with these key c
 5. **REST API**: Provides programmatic access to the fact-checking capabilities
 6. **Streamlit UI**: Presents the results in an intuitive web interface
 
-![Architecture Diagram](Architecture.png)
+![mermaid-diagram-2025-04-19-123124](https://github.com/user-attachments/assets/c249b14b-9a13-4e32-a03a-27bdaca1e8dd)
 
 ## Getting Started
 
