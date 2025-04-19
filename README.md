@@ -61,10 +61,7 @@ The Tathya Fact Checking System follows a pipeline architecture with these key c
 
 3. Set up environment variables by creating a `.env` file:
    ```
-   AZURE_OPENAI_API_KEY=your_api_key
-   AZURE_OPENAI_ENDPOINT=your_endpoint
-   AZURE_OPENAI_API_VERSION=your_api_version
-   AZURE_OPENAI_CHAT_DEPLOYMENT_NAME=your_deployment_name
+   LLM_KEYS=your_llm_api_key
    
    TAVILY_API_KEY=your_tavily_api_key
    GEMINI_API_KEY=your_gemini_api_key
