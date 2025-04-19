@@ -33,7 +33,7 @@ The Tathya Fact Checking System follows a pipeline architecture with these key c
 5. **REST API**: Provides programmatic access to the fact-checking capabilities
 6. **Streamlit UI**: Presents the results in an intuitive web interface
 
-![Architecture Diagram](Architecture.png)
+![mermaid-diagram-2025-04-19-123124](https://github.com/user-attachments/assets/c249b14b-9a13-4e32-a03a-27bdaca1e8dd)
 
 ## Getting Started
 
@@ -61,10 +61,7 @@ The Tathya Fact Checking System follows a pipeline architecture with these key c
 
 3. Set up environment variables by creating a `.env` file:
    ```
-   AZURE_OPENAI_API_KEY=your_api_key
-   AZURE_OPENAI_ENDPOINT=your_endpoint
-   AZURE_OPENAI_API_VERSION=your_api_version
-   AZURE_OPENAI_CHAT_DEPLOYMENT_NAME=your_deployment_name
+   LLM_KEYS=your_llm_api_key
    
    TAVILY_API_KEY=your_tavily_api_key
    GEMINI_API_KEY=your_gemini_api_key
