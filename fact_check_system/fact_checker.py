@@ -79,6 +79,22 @@ def run_fact_check(claim: str) -> FactCheckResult:
     gemini_parsed: Optional[GeminiParsedOutput] = tools.perform_gemini_search_and_parse(claim)
     if gemini_parsed:
         logger.info(f"Gemini search and parse successful. Summary: {gemini_parsed.summary[:100]}...")
+        
+        # Handle Gemini sources that are direct URLs
+        if gemini_parsed.sources:
+            logger.info(f"Gemini provided {len(gemini_parsed.sources)} URL sources")
+            for url in gemini_parsed.sources:
+                if isinstance(url, str) and url.startswith('http'):
+                    # Create a simple dictionary representation for each URL source
+                    collected_results.append({
+                        'href': url,
+                        'url': url,
+                        'title': url,
+                        'snippet': "Source from Gemini search results",
+                        'source_tool': 'Gemini URL Source'
+                    })
+        
+        # Add the main Gemini response
         collected_results.append(gemini_parsed.model_dump())
     else:
         logger.warning("Gemini search failed or parsing failed.")
