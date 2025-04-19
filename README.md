@@ -50,7 +50,7 @@ The Tathya Fact Checking System follows a pipeline architecture with these key c
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/tathya-fact-checking-system.git
+   git clone https://github.com/Kaos599/tathya-fact-checking-system.git
    cd tathya-fact-checking-system
    ```
 
