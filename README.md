@@ -9,11 +9,29 @@ Tathya is a comprehensive fact-checking system designed to verify claims by gath
 ## Features
 
 - **Multi-source Evidence Collection**: Gathers information from Google Search, DuckDuckGo, Wikidata, NewsAPI, and Tavily
-- **Claim Decomposition**: Breaks complex claims into simpler, verifiable components
+- **Claim Decomposition**: Breaks complex claims into simpler, verifiable components using LLMs
 - **Confidence Scoring**: Provides a confidence score with each verdict
-- **Detailed Explanation**: Offers a 150-word summary explaining the reasoning behind the verdict
+- **Detailed Explanation**: Offers a comprehensive summary explaining the reasoning behind the verdict
 - **Source Attribution**: Transparently shows all sources consulted during fact-checking
 - **Modern Dark Mode Interface**: Clean, user-friendly interface with dark mode for comfortable reading
+- **Multi-step Verification Process**: Shows the user a step-by-step verification process
+- **Source Tool Categorization**: Displays the tools used for evidence gathering
+
+## System Architecture
+
+The Tathya Fact Checking System follows a pipeline architecture with these key components:
+
+1. **Claim Analyzer**: Decomposes complex claims into verifiable units using LLMs
+2. **Evidence Gatherer**: Collects information from multiple sources:
+   - Tavily API (search)
+   - Google AI (Gemini) for web search and analysis
+   - Wikidata for factual knowledge base queries
+   - DuckDuckGo for independent web search
+   - NewsAPI for current events and news articles
+3. **Evidence Verifier**: Assesses the credibility and relevance of evidence
+4. **Synthesis Module**: Combines all evidence to form a final verdict with explanation
+5. **REST API**: Provides programmatic access to the fact-checking capabilities
+6. **Streamlit UI**: Presents the results in an intuitive web interface
 
 ## Getting Started
 
@@ -54,20 +72,28 @@ Tathya is a comprehensive fact-checking system designed to verify claims by gath
 
 ### Running the Application
 
-Start the Streamlit application:
+1. Start the backend API server:
+   ```bash
+   cd fact_check_system/api
+   python main.py
+   ```
+   The API will be available at `http://127.0.0.1:8000`.
 
-```bash
-streamlit run app.py
-```
+2. Start the Streamlit frontend:
+   ```bash
+   streamlit run app.py
+   ```
+   The app will be available at `http://localhost:8501`.
 
-The app will be available at `http://localhost:8501`.
+## How the System Works
 
-## How to Use
-
-1. Enter a factual claim in the search bar
-2. Wait for the system to analyze the claim and gather evidence
-3. Review the verdict, confidence score, and detailed explanation
-4. Examine the evidence sources for additional information
+1. **User Input**: The user enters a factual claim in the Streamlit interface.
+2. **API Request**: The frontend sends the claim to the backend API.
+3. **Claim Decomposition**: The system breaks down complex claims into simpler, verifiable parts.
+4. **Evidence Collection**: Multiple sources are queried in parallel to gather relevant information.
+5. **Evidence Verification**: Each piece of information is assessed for relevance and credibility.
+6. **Synthesis**: All evidence is combined to form a final verdict with a confidence score.
+7. **Presentation**: The results are displayed in an intuitive interface with a verdict, explanation, and source list.
 
 ## Example Claims to Try
 
@@ -76,15 +102,36 @@ The app will be available at `http://localhost:8501`.
 - "Did the COVID-19 pandemic start in 2019?"
 - "Is Mount Everest the tallest mountain on Earth?"
 
-## System Architecture
+## API Usage
 
-The Tathya Fact Checking System consists of the following components:
+The system provides a REST API for programmatic access:
 
-1. **Claim Analyzer**: Decomposes complex claims into verifiable units
-2. **Evidence Gatherer**: Collects information from multiple sources
-3. **Verification Engine**: Assesses the credibility and relevance of evidence
-4. **Synthesis Module**: Combines all evidence to form a final verdict
-5. **User Interface**: Presents the results in an intuitive way
+### Check a Claim
+```
+POST /check
+{
+  "claim": "Your claim text here",
+  "language": "en"
+}
+```
+
+Response:
+```json
+{
+  "claim": "Your claim text here",
+  "result": "True",
+  "confidence_score": 0.85,
+  "explanation": "Detailed explanation...",
+  "sources": [
+    {
+      "url": "https://example.com/source1",
+      "title": "Source Title",
+      "snippet": "Relevant excerpt...",
+      "tool": "Tavily Search"
+    }
+  ]
+}
+```
 
 ## Contributing
 
@@ -98,4 +145,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - Thanks to all the API providers that make this system possible
 - Built with Streamlit for the web interface
+- Powered by LangChain for orchestration
 
