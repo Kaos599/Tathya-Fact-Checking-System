@@ -303,7 +303,7 @@ st.markdown('<div class="main-container">', unsafe_allow_html=True)
 st.markdown('<div class="logo-container">', unsafe_allow_html=True)
 if os.path.exists(LOGO_PATH):
     logo_image = Image.open(LOGO_PATH)
-    st.image(logo_image, width=350, output_format="PNG", use_container_width=False, caption="")
+    st.image(logo_image, width=900, output_format="PNG", use_container_width=False, caption="")
 else:
     st.markdown("<h1 style='text-align:center;margin-bottom:0'>Tathya</h1>", unsafe_allow_html=True)
     st.markdown("<h4 style='text-align:center;color:#888;margin-top:4px'>Fact‑Checking simplified</h4>", unsafe_allow_html=True)
