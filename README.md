@@ -4,7 +4,7 @@
 
 ## Overview
 
-Tathya is a comprehensive fact-checking system designed to verify claims by gathering evidence from multiple sources and providing a structured analysis with confidence scores. The system uses a combination of search engines, knowledge bases, and LLM-powered analysis to deliver accurate verdicts on factual claims.
+Tathya is a comprehensive fact-checking system designed to verify claims by gathering evidence from multiple sources and providing a structured analysis with confidence scores. The name "Tathya" (तथ्य) comes from Sanskrit, meaning "truth" or "reality" - perfectly embodying the system's purpose of discovering factual accuracy. The system uses a combination of search engines, knowledge bases, and LLM-powered analysis to deliver accurate verdicts on factual claims.
 
 ## Features
 
