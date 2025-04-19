@@ -38,3 +38,4 @@ coverage.xml
 *.swp
 __pycache__/example.cpython-312.pyc
 __pycache__/
+fact_check_results.json

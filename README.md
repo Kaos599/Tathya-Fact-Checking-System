@@ -1,4 +1,7 @@
 # Tathya: Advanced Agentic Fact-Checking System
+[![Python Version](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Powered by LangChain](https://img.shields.io/badge/Powered%20By-LangChain-blue.svg)](https://www.langchain.com/)
 
 An advanced fact-checking system utilizing multi-agent architecture, LangGraph orchestration, and confidence scoring to provide transparent and reliable fact verification.
 
@@ -10,246 +13,203 @@ An advanced fact-checking system utilizing multi-agent architecture, LangGraph o
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Usage](#usage)
-- [API Reference](#api-reference)
 - [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Overview
 
-Tathya (Sanskrit for "fact" or "truth") is a sophisticated fact-checking system designed to verify claims through a multi-agent approach. It decomposes complex claims into atomic verifiable units, gathers evidence from multiple sources, cross-verifies through parallel agent reasoning, and synthesizes a final verdict with detailed confidence scoring.
+Tathya (Sanskrit for "fact" or "truth") is a sophisticated fact-checking system designed to verify claims through a multi-agent approach. It decomposes complex claims, gathers evidence from multiple sources (web search, news APIs, knowledge bases), cross-verifies findings, and synthesizes a final verdict with detailed confidence scoring.
 
 The system was built with the following design principles:
-- **Transparency**: Clear reasoning paths and evidence for each verification step
-- **Reliability**: Multi-agent verification to mitigate individual agent biases
-- **Confidence Quantification**: Detailed confidence scoring based on evidence quality, verification consensus, and claim complexity
-- **Modularity**: Extensible architecture to easily incorporate new verification agents and evidence sources
+- **Transparency**: Clear reasoning paths and evidence for each verification step.
+- **Reliability**: Multi-source evidence gathering and potential for multi-agent verification.
+- **Confidence Quantification**: Detailed confidence scoring based on evidence.
+- **Modularity**: Extensible architecture to easily incorporate new verification agents and evidence sources.
 
 ## Architecture
 
-Tathya follows a multi-agent architecture where specialized agents work collaboratively through a precisely orchestrated workflow:
+Tathya currently follows a pipeline architecture where specialized components work sequentially:
 
-### Core Components
+1.  **Claim Processing**:
+    *   Claim decomposition into searchable components using the primary LLM.
 
-1. **Claim Processing Pipeline**
-   - Claim extraction and normalization
-   - Claim decomposition into atomic verifiable units
-   - Priority ranking of claims based on complexity and importance
+2.  **Evidence Retrieval**:
+    *   Gathering information from multiple sources using various tools:
+        *   Web search engines (Tavily, DuckDuckGo).
+        *   Dedicated Search-Augmented LLM calls (Primary LLM with Search).
+        *   Knowledge bases (Wikidata).
+        *   News APIs (NewsAPI).
 
-2. **Verification Framework**
-   - Multi-source evidence retrieval system (Web search engines, Knowledge bases, News APIs)
-   - Multiple search engines including Tavily, DuckDuckGo, and Brave Search
-   - Knowledge bases including Wikidata
-   - News sources including NewsAPI
-   - Cross-verification through parallel agent reasoning using different LLMs (Azure OpenAI and Google Gemini)
-   - Evidence evaluation and synthesis
+3.  **Evidence Processing**:
+    *   Parsing and structuring results (e.g., using a secondary LLM for Search-Augmented LLM output).
+    *   Deduplication of retrieved information based on source URLs.
+    *   Verification of relevance (currently placeholder logic using the primary LLM).
 
-3. **Orchestration Layer**
-   - State management and workflow coordination using LangGraph
-   - Human feedback integration points
-   - Execution monitoring and error handling
+4.  **Synthesis & Verdict**:
+    *   Formatting collected evidence for the primary LLM.
+    *   Generating a final verdict (TRUE, FALSE, UNCERTAIN, etc.) and explanation using the primary LLM based on the synthesized evidence.
+    *   Assigning a confidence score to the final verdict.
 
-4. **Confidence Scoring**
-   - Evidence quality and quantity assessment
-   - Verification consensus measurement
-   - Claim complexity evaluation
-   - Historical accuracy adjustments
 
 ## Key Features
 
-- **Claim Decomposition**: Breaks down complex claims into atomic, verifiable units
-- **Multi-Source Evidence Retrieval**: Gathers evidence from multiple web search engines (Tavily, DuckDuckGo, Brave), knowledge bases (Wikidata), and news sources (NewsAPI)
-- **Cross-Verification**: Uses multiple verification agents with different LLMs (Azure OpenAI and Google Gemini) to independently verify claims
-- **Detailed Confidence Scoring**: Provides comprehensive confidence metrics for transparent assessment
-- **API-First Design**: RESTful API for easy integration with other systems
-- **Background Processing**: Support for asynchronous verification of complex claims
+- **Claim Decomposition**: Breaks down claims into searchable components using an LLM.
+- **Multi-Source Evidence Retrieval**: Gathers evidence from Tavily, DuckDuckGo, Wikidata, NewsAPI, and a Search-Augmented LLM.
+- **LLM-Powered Parsing**: Uses a secondary LLM to structure output from specific tools.
+- **Evidence Deduplication**: Removes redundant information based on source URLs.
+- **LLM-Powered Synthesis**: Generates a final verdict and explanation based on aggregated evidence using the primary LLM.
+- **Confidence Scoring**: Provides a confidence score alongside the verdict.
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.9+
-- API keys for:
-  - Google Gemini (for cross-verification)
-  - News API (optional, for news-based verification)
+- Python 3.9 or higher.
+- API keys for desired services (see Configuration).
 
 ### Setup
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/Kaos599/tathya-fact-checking-system.git
-   cd tathya-fact-checking-system
-   ```
+1.  Clone the repository:
+    ```bash
+    git clone https://github.com/Kaos599/tathya-fact-checking-system.git
+    cd tathya-fact-checking-system
+    ```
 
-2. Create and activate a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
+2.  Create and activate a virtual environment (recommended):
+    ```bash
+    # Linux/macOS
+    python3 -m venv venv
+    source venv/bin/activate
 
-3. Install dependencies:
-   ```bash
-   pip install -r fact_check_system/requirements.txt
-   ```
+    # Windows
+    python -m venv venv
+    .\venv\Scripts\activate
+    ```
 
-4. Create a `.env` file in the root directory with your API keys:
-   ```
-   GEMINI_API_KEY=your_gemini_api_key
-   NEWS_API_KEY=your_news_api_key
-   ```
+3.  Install dependencies:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+4.  Set up required environment variables (see Configuration).
 
 ## Configuration
 
-The system requires the following API keys to be set in your `.env` file:
+Configure the system by setting environment variables. Create a `.env` file in the project root or set them directly in your system environment.
 
-- **Required API Keys**:
-  ```
-  GEMINI_API_KEY=your_gemini_api_key
-  GEMINI_MODEL=gemini-1.5-pro
-  NEWS_API_KEY=your_news_api_key
-  ```
+**Required:**
 
-- **Search API Keys** (optional, but recommended for better results):
-  ```
-  TAVILY_API_KEY=your_tavily_api_key
-  BRAVE_SEARCH_API_KEY=your_brave_search_api_key
-  ```
+*   **Primary LLM Configuration**: Define the primary language model used for core reasoning tasks like claim decomposition and synthesis. (Specific variables depend on the chosen provider, e.g., `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`).
+*   **Primary LLM Model Name**: Specify the model identifier (e.g., `PRIMARY_MODEL_NAME=gpt-4o`).
 
-- **Azure OpenAI** (optional for secondary verification):
-  ```
-  AZURE_OPENAI_API_KEY=your_azure_openai_key
-  AZURE_OPENAI_ENDPOINT=your_azure_endpoint
-  AZURE_OPENAI_API_VERSION=your_api_version
-  AZURE_OPENAI_CHAT_DEPLOYMENT_NAME=your_deployment_name
-  ```
+**Optional (for Tools):**
 
-You can also configure the system through environment variables:
+*   **Search-Augmented LLM Configuration**:
+    *   `GEMINI_API_KEY`: API Key for Google Gemini (used by `perform_gemini_google_search`).
+    *   `GEMINI_MODEL`: Model name (e.g., `gemini-pro`).
+*   **Parsing LLM Configuration**: Define the model used for parsing structured data, if different from the primary LLM.
+*   **Search Tool Keys**:
+    *   `TAVILY_API_KEY`: API Key for Tavily search.
+    *   `NEWS_API_KEY`: API Key for NewsAPI.
+    *   *(DuckDuckGo and Wikidata tools do not require API keys)*
 
-- `GEMINI_API_KEY`: Google Gemini API key for primary verification
-- `GEMINI_MODEL`: The specific Gemini model to use (default: gemini-1.5-pro)
-- `NEWS_API_KEY`: News API key for news-based verification
-- `BRAVE_SEARCH_API_KEY`: Brave Search API key for web search
-- `HIGH_CONFIDENCE_THRESHOLD`: Threshold for high confidence (default: 0.8)
-- `MEDIUM_CONFIDENCE_THRESHOLD`: Threshold for medium confidence (default: 0.5)
-- `LOW_CONFIDENCE_THRESHOLD`: Threshold for low confidence (default: 0.3)
-- `PORT`: Port for the API server (default: 8000)
+**Optional (Behavioral):**
+
+*   **Confidence Thresholds**:
+    *   `HIGH_CONFIDENCE_THRESHOLD`: (Default: 0.8)
+    *   `MEDIUM_CONFIDENCE_THRESHOLD`: (Default: 0.5)
+    *   `LOW_CONFIDENCE_THRESHOLD`: (Default: 0.3)
+
+*Example `.env` file structure:*
+```dotenv
+# Primary LLM (Example: OpenAI)
+OPENAI_API_KEY=your_openai_api_key
+PRIMARY_MODEL_NAME=gpt-4o
+
+# Search-Augmented LLM (Example: Gemini)
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-1.5-flash
+
+# Tool Keys
+TAVILY_API_KEY=your_tavily_api_key
+NEWS_API_KEY=your_newsapi_key
+
+# Optional Thresholds
+# HIGH_CONFIDENCE_THRESHOLD=0.85
+# MEDIUM_CONFIDENCE_THRESHOLD=0.6
+```
 
 ## Usage
 
-### Starting the API Server
+The main entry point is the `run_fact_check` function.
 
-```bash
-python -m fact_check_system.main
-```
+```python
+# Example usage (ensure environment variables are set)
+from fact_check_system.fact_checker import run_fact_check
+from dotenv import load_dotenv
 
-The API will start on http://localhost:8000 by default.
+load_dotenv() # Load variables from .env file
 
-### API Endpoints
+claim = "The Eiffel Tower is located in Berlin."
+result = run_fact_check(claim)
 
-#### Check a Factual Claim
+print(f"Claim: {result.claim}")
+print(f"Verdict: {result.verdict}")
+print(f"Confidence: {result.confidence_score:.2f}")
+print(f"Explanation:\n{result.explanation}")
+print("\nEvidence Sources:")
+if result.evidence_sources:
+    for evidence in result.evidence_sources:
+        print(f"- [{evidence.source_tool}] {evidence.title or evidence.url}")
+else:
+    print("- No evidence sources found.")
 
-```bash
-curl -X POST "http://localhost:8000/check" \
-  -H "Content-Type: application/json" \
-  -d '{"claim": "The Earth orbits the Sun", "background_processing": false}'
-```
-
-For complex claims that may take longer to process, use background processing:
-
-```bash
-curl -X POST "http://localhost:8000/check" \
-  -H "Content-Type: application/json" \
-  -d '{"claim": "The Earth orbits the Sun", "background_processing": true}'
-```
-
-#### Check the Status of a Background Verification
-
-```bash
-curl -X GET "http://localhost:8000/status/req_1234567890_1234"
-```
-
-## API Reference
-
-### `POST /check`
-
-Checks a factual claim and returns a verification result.
-
-**Request Body:**
-- `claim` (string): The claim to verify
-- `background_processing` (boolean, optional): Whether to process the claim in the background
-
-**Response:**
-```json
-{
-  "request_id": "req_1234567890_1234",
-  "status": "completed",
-  "result": {
-    "original_claim": "The Earth orbits the Sun",
-    "atomic_verdicts": {
-      "claim_id_1": {
-        "claim_id": "claim_id_1",
-        "claim_text": "The Earth orbits the Sun",
-        "verdict": "TRUE",
-        "confidence": 0.95,
-        "reasoning": "Multiple reliable sources confirm...",
-        "evidence_summary": "Scientific consensus and observational evidence..."
-      }
-    },
-    "overall_verdict": "TRUE",
-    "overall_confidence": 0.95,
-    "reasoning": "The claim is supported by scientific consensus...",
-    "summary": "This claim is verified as true with high confidence..."
-  },
-  "processing_time": 12.34
-}
-```
-
-### `GET /status/{request_id}`
-
-Checks the status of a background verification request.
-
-**Path Parameters:**
-- `request_id` (string): The unique request ID
-
-**Response:**
-```json
-{
-  "request_id": "req_1234567890_1234",
-  "status": "completed",
-  "result": { ... },
-  "processing_time": 12.34
-}
 ```
 
 ## Development
 
 ### Project Structure
 
-- `config.py`: Environment variables and configuration settings
-- `schemas.py`: Pydantic models for all data structures
-- `agents.py`: Specialized agent functions with single responsibilities
-- `tools.py`: Custom tools for accessing external APIs or services
-- `workflow.py`: LangGraph StateGraph definitions
-- `main.py`: FastAPI application and API endpoints
+```
+.
+├── fact_check_system/      # Main package directory
+│   ├── config.py           # Environment loading, API clients
+│   ├── models.py           # Core Pydantic data models
+│   ├── schemas.py          # Additional Pydantic schemas (potential future use)
+│   ├── tools.py            # Wrappers for external APIs/tools
+│   ├── prompts.py          # LangChain prompt templates
+│   └── fact_checker.py     # Main orchestration logic
+├── .env.example            # Example environment file
+├── requirements.txt        # Project dependencies
+└── README.md               # This file
+```
 
-### Adding a New Evidence Source
+### Running Tests (Placeholder)
 
-To add a new evidence source:
-
-1. Add a new tool function in `tools.py`
-2. Update the `retrieve_evidence` function in `workflow.py` to use the new tool
-3. Update the confidence scoring logic if necessary
-
-### Adding a New Verification Agent
-
-To add a new verification agent:
-
-1. Add a new agent function in `agents.py`
-2. Update the `verify_claims` function in `workflow.py` to use the new agent
-3. Update the adjudication logic to incorporate the new agent's results
-
-### Testing
-
-Run the tests with:
+*(Add instructions for running tests once implemented)*
 
 ```bash
-pytest
-``` 
+# Example: pytest
+# pytest tests/
+```
+
+## Contributing
+
+Contributions are welcome! Please follow these steps:
+
+1.  Fork the repository.
+2.  Create a new branch (`git checkout -b feature/your-feature-name`).
+3.  Make your changes.
+4.  Ensure code follows project style guidelines (consider adding linters like Ruff/Black).
+5.  Write tests for new functionality.
+6.  Commit your changes (`git commit -am 'Add some feature'`).
+7.  Push to the branch (`git push origin feature/your-feature-name`).
+8.  Create a new Pull Request.
+
+Please ensure your PR includes a clear description of the changes and addresses any relevant issues.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details (assuming MIT, create a LICENSE file if needed).
+
