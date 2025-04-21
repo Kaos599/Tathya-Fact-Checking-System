@@ -319,10 +319,10 @@ claim = st.text_input(
 # Initialize session state for tracking progress
 if 'progress_state' not in st.session_state:
     st.session_state.progress_state = {
-        'searching': False,
-        'analyzing': False,
-        'verifying': False,
-        'complete': False
+        'task_id': None,
+        'status': 'idle', # idle, pending, polling, completed, error
+        'error_message': None,
+        'api_data': None
     }
 
 # Results container
@@ -330,142 +330,158 @@ results_container = st.container()
 
 if claim:
     with results_container:
-        # Show animated steps when not complete
-        if not st.session_state.progress_state['complete']:
-            # Step 1: Searching for information
-            st.markdown('<div style="margin: 30px 0;">', unsafe_allow_html=True)
-            
-            step1_class = "loader-step loader-step-active" if not st.session_state.progress_state['searching'] else "loader-step loader-step-complete"
-            st.markdown(f'<div class="{step1_class}"><span class="loader-icon">🔍</span> Searching for information related to your claim...</div>', unsafe_allow_html=True)
-            if not st.session_state.progress_state['searching']:
-                st.session_state.progress_state['searching'] = True
-                time.sleep(0.7)  # Simulate search time
-                st.rerun()
-            
-            # Step 2: Analyzing sources
-            if st.session_state.progress_state['searching']:
-                step2_class = "loader-step loader-step-active" if not st.session_state.progress_state['analyzing'] else "loader-step loader-step-complete"
-                st.markdown(f'<div class="{step2_class}"><span class="loader-icon">📊</span> Analyzing sources and evidence...</div>', unsafe_allow_html=True)
-                if not st.session_state.progress_state['analyzing']:
-                    st.session_state.progress_state['analyzing'] = True
-                    time.sleep(0.8)  # Simulate analysis time
-                    st.rerun()
-            
-            # Step 3: Verifying claim
-            if st.session_state.progress_state['analyzing']:
-                step3_class = "loader-step loader-step-active" if not st.session_state.progress_state['verifying'] else "loader-step loader-step-complete"
-                st.markdown(f'<div class="{step3_class}"><span class="loader-icon">✅</span> Verifying claim accuracy...</div>', unsafe_allow_html=True)
-                if not st.session_state.progress_state['verifying']:
-                    st.session_state.progress_state['verifying'] = True
-                    time.sleep(0.9)  # Simulate verification time
-                    st.rerun()
-            
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            # If all steps complete, make the API call
-            if st.session_state.progress_state['verifying'] and not st.session_state.progress_state['complete']:
+        current_status = st.session_state.progress_state['status']
+
+        # --- Start the process if status is idle ---
+        if current_status == 'idle':
+            st.session_state.progress_state['status'] = 'pending'
+            st.session_state.progress_state['task_id'] = None
+            st.session_state.progress_state['error_message'] = None
+            st.session_state.progress_state['api_data'] = None
+            st.rerun()
+
+        # --- Initiate API call if status is pending ---
+        elif current_status == 'pending':
+            with st.spinner("Initiating fact-check..."):
                 try:
-                    # Make API call with a loading animation
-                    with st.status("Contacting API...") as status:
-                        lottie_json = load_lottie(LOADER_URL)
-                        if lottie_json:
-                            st_lottie(lottie_json, height=120, key="loading_api")
-                        
-                        response = requests.post(API_ENDPOINT, json={"claim": claim, "language": "en"}, timeout=60)
-                        response.raise_for_status()
-                        
-                        api_data = response.json()
-                        st.session_state.api_data = api_data
-                        status.update(label="Done!", state="complete")
-                    
-                    # Mark process as complete
-                    st.session_state.progress_state['complete'] = True
-                    
-                    # Brief pause before showing results
-                    time.sleep(0.5)
-                    st.rerun()
-                    
+                    response = requests.post(API_ENDPOINT, json={"claim": claim, "language": "en"}, timeout=15) # Shorter timeout for initial request
+                    response.raise_for_status() # Raise exception for bad status codes (4xx or 5xx)
+
+                    if response.status_code == 202: # 202 Accepted
+                        task_data = response.json()
+                        st.session_state.progress_state['task_id'] = task_data.get('task_id')
+                        st.session_state.progress_state['status'] = 'polling'
+                        st.rerun() # Rerun to start polling
+                    else:
+                        st.session_state.progress_state['status'] = 'error'
+                        st.session_state.progress_state['error_message'] = f"Unexpected status code {response.status_code} from API: {response.text}"
+                        st.rerun()
+
                 except requests.exceptions.RequestException as e:
-                    st.error(f"Error contacting the fact-checking API: {e}")
-                    st.error(f"Please ensure the API server is running at {API_ENDPOINT}")
-                    
-                    # For demo/development - mock data if API fails
-                    st.warning("Using mock data for demonstration")
-                    mock_data = {
-                        "result": "True",
-                        "confidence_score": 0.82,
-                        "explanation": "In July 2023, India surpassed China to become the world's most populous nation, driven by its sustained rapid growth and China's slowing demographic expansion. This demographic transition carries both opportunities and responsibilities for India and the wider world. Current Population Ranking: As of mid-2023, the United Nations estimates that India's population reached 1.4286 billion, slightly exceeding China's 1.4257 billion. This milestone marks the first time in recorded history that India has held the top spot. The shift reflects China's decades of low fertility and an aging population, juxtaposed with India's higher birth rates and younger demographic profile. Factors Behind India's Growth: India's population expansion stems from fertility rates at or just above replacement level, declining mortality, and improvements in healthcare.",
-                        "sources": [
-                            {
-                                "url": "https://www.un.org/development/desa/pd/content/World-Population-Prospects-2022",
-                                "title": "UN World Population Prospects 2022",
-                                "snippet": "India's population reached 1.4286 billion in mid-2023, surpassing China as the world's most populous country.",
-                                "confidence": 0.95,
-                                "tool": "United Nations"
-                            },
-                            {
-                                "url": "https://www.bbc.com/news/world-asia-india-65343809",
-                                "title": "India overtakes China to become world's most populous nation",
-                                "snippet": "India now has more people than any other country in the world, overtaking China, according to United Nations data.",
-                                "confidence": 0.88,
-                                "tool": "BBC News"
-                            },
-                            {
-                                "url": "https://www.census.gov/popclock/world",
-                                "title": "World Population Clock",
-                                "snippet": "Current world population statistics showing India with the largest population as of 2023.",
-                                "confidence": 0.75,
-                                "tool": "US Census Bureau"
-                            }
-                        ]
-                    }
-                    st.session_state.api_data = mock_data
-                    st.session_state.progress_state['complete'] = True
-                    time.sleep(0.5)
+                    st.session_state.progress_state['status'] = 'error'
+                    st.session_state.progress_state['error_message'] = f"Error contacting API: {e}. Please ensure the API server is running at {API_ENDPOINT} and is accessible."
                     st.rerun()
-        
-        # Display results if process is complete
-        if st.session_state.progress_state['complete'] and hasattr(st.session_state, 'api_data'):
-            api_data = st.session_state.api_data
-            
-            # --- Display Verdict ---
-            verdict = api_data.get("result", "Uncertain")
-            confidence = float(api_data.get("confidence_score", 0.0))
-            color = verdict_color(confidence)
-            
-            st.markdown('<div class="verdict-container">', unsafe_allow_html=True)
-            verdict_html = f"""
-            <div class="verdict-text" style="background-color: {color}; color: #FFFFFF; box-shadow: 0 0 20px {color}80;">
-                VERDICT: {verdict.upper()} (Confidence: {confidence:.2f})
-            </div>
-            """
-            st.markdown(verdict_html, unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            # --- Display Summary ---
-            with st.expander("Summary", expanded=True):
-                summary = api_data.get("explanation", "No summary provided.")
-                summary_truncated = truncate(summary)
-                st.markdown(f"<div class='summary-box'>{summary_truncated}</div>", unsafe_allow_html=True)
-                
-                # Add a "Read more" button if the summary was truncated
-                if len(summary.split()) > MAX_SUMMARY_WORDS:
-                    with st.expander("Read full explanation"):
-                        st.markdown(f"<div class='summary-box'>{summary}</div>", unsafe_allow_html=True)
-            
-            # --- Display Sources ---
-            st.subheader("Sources")
-            render_sources(api_data.get("sources", []))
-            
-            # Reset progress state if user wants to search again
-            if st.button("New Search", use_container_width=True, type="primary"):
+
+        # --- Poll for results if status is polling ---
+        elif current_status == 'polling':
+            task_id = st.session_state.progress_state['task_id']
+            if not task_id:
+                st.session_state.progress_state['status'] = 'error'
+                st.session_state.progress_state['error_message'] = "Missing Task ID for polling."
+                st.rerun()
+            else:
+                # Show animated steps while polling
+                st.markdown('<div style="margin: 30px 0;">', unsafe_allow_html=True)
+                step1_class = "loader-step loader-step-complete" # Assume searching started
+                st.markdown(f'<div class="{step1_class}"><span class="loader-icon">🔍</span> Searching & Analyzing... (Task ID: {task_id[:8]}...)</div>', unsafe_allow_html=True)
+                step2_class = "loader-step loader-step-active"
+                st.markdown(f'<div class="{step2_class}"><span class="loader-icon">📊</span> Verifying claim... Please wait.</div>', unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+                polling_interval = 5 # Poll every 5 seconds
+                max_polling_attempts = 120 # Max attempts (e.g., 60 * 5s = 300s)
+                poll_attempt = st.session_state.progress_state.get('poll_attempt', 0)
+
+                if poll_attempt >= max_polling_attempts:
+                    st.session_state.progress_state['status'] = 'error'
+                    st.session_state.progress_state['error_message'] = f"Fact-check timed out after {max_polling_attempts * polling_interval} seconds."
+                    st.rerun()
+                else:
+                    results_url = f"{API_ENDPOINT.replace('/check', '')}/results/{task_id}"
+                    try:
+                        status_response = requests.get(results_url, timeout=10)
+                        status_response.raise_for_status()
+                        result_data = status_response.json()
+
+                        if result_data.get('status') == 'completed':
+                            st.session_state.progress_state['status'] = 'completed'
+                            st.session_state.progress_state['api_data'] = result_data.get('result')
+                            st.session_state.progress_state['poll_attempt'] = 0 # Reset poll attempt
+                            st.rerun()
+                        elif result_data.get('status') == 'error':
+                            st.session_state.progress_state['status'] = 'error'
+                            st.session_state.progress_state['error_message'] = result_data.get('error_detail', "An unknown error occurred during fact-checking.")
+                            st.session_state.progress_state['poll_attempt'] = 0 # Reset poll attempt
+                            st.rerun()
+                        elif result_data.get('status') == 'processing':
+                            # Still processing, wait and rerun for next poll
+                            st.session_state.progress_state['poll_attempt'] = poll_attempt + 1
+                            time.sleep(polling_interval)
+                            st.rerun()
+                        else:
+                            st.session_state.progress_state['status'] = 'error'
+                            st.session_state.progress_state['error_message'] = f"Unknown status received from API: {result_data.get('status')}"
+                            st.rerun()
+
+                    except requests.exceptions.RequestException as e:
+                        st.session_state.progress_state['status'] = 'error'
+                        st.session_state.progress_state['error_message'] = f"Error polling for results: {e}. API might be down."
+                        st.rerun()
+                    except Exception as e:
+                        st.session_state.progress_state['status'] = 'error'
+                        st.session_state.progress_state['error_message'] = f"Error processing results response: {e}"
+                        st.rerun()
+
+        # --- Display results if process is complete ---
+        elif current_status == 'completed':
+            api_data = st.session_state.progress_state.get('api_data')
+            if api_data:
+                # --- Display Verdict ---
+                verdict = api_data.get("result", "Uncertain")
+                confidence = float(api_data.get("confidence_score", 0.0))
+                color = verdict_color(confidence)
+
+                st.markdown('<div class="verdict-container">', unsafe_allow_html=True)
+                verdict_html = f"""
+                <div class="verdict-text" style="background-color: {color}; color: #FFFFFF; box-shadow: 0 0 20px {color}80;">
+                    VERDICT: {verdict.upper()} (Confidence: {confidence:.2f})
+                </div>
+                """
+                st.markdown(verdict_html, unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+                # --- Display Summary ---
+                with st.expander("Summary", expanded=True):
+                    summary = api_data.get("explanation", "No summary provided.")
+                    summary_truncated = truncate(summary)
+                    st.markdown(f"<div class='summary-box'>{summary_truncated}</div>", unsafe_allow_html=True)
+
+                    # Add a "Read more" button if the summary was truncated
+                    if len(summary.split()) > MAX_SUMMARY_WORDS:
+                        with st.expander("Read full explanation"):
+                            st.markdown(f"<div class='summary-box'>{summary}</div>", unsafe_allow_html=True)
+
+                # --- Display Sources ---
+                st.subheader("Sources")
+                render_sources(api_data.get("sources", []))
+
+                # Reset progress state if user wants to search again
+                if st.button("New Search", use_container_width=True, type="primary"):
+                    st.session_state.progress_state = {
+                        'task_id': None,
+                        'status': 'idle',
+                        'error_message': None,
+                        'api_data': None
+                    }
+                    st.rerun()
+            else:
+                 st.error("Completed status reached but no API data found.")
+                 st.session_state.progress_state['status'] = 'idle' # Reset to allow retry
+                 st.rerun()
+
+        # --- Display error if status is error ---
+        elif current_status == 'error':
+            st.error(f"Fact-checking failed: {st.session_state.progress_state.get('error_message', 'Unknown error')}")
+            # Allow user to try again
+            if st.button("Try New Search", use_container_width=True, type="primary"):
                 st.session_state.progress_state = {
-                    'searching': False,
-                    'analyzing': False,
-                    'verifying': False,
-                    'complete': False
+                    'task_id': None,
+                    'status': 'idle',
+                    'error_message': None,
+                    'api_data': None
                 }
                 st.rerun()
+
 else:
     # Show prompt if no claim is entered
     with results_container:

@@ -7,6 +7,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from . import config  # Import from the current package
 from .models import GeminiParsedOutput # Import the Pydantic model for parsed output
+from .prompts import RESULT_VERIFICATION_TEMPLATE # Import the verification prompt
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers.json import JsonOutputParser
 from langchain_core.exceptions import OutputParserException
@@ -259,7 +260,7 @@ def perform_gemini_search_and_parse(claim: str) -> Optional[GeminiParsedOutput]:
 
 def verify_duckduckgo_results(claim: str, ddg_results: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """
-    (Placeholder) Verifies the relevance of DuckDuckGo results against the original claim using the primary LLM.
+    Verifies the relevance of DuckDuckGo results against the original claim using the primary LLM.
 
     Args:
         claim: The original claim.
@@ -271,23 +272,48 @@ def verify_duckduckgo_results(claim: str, ddg_results: List[Dict[str, str]]) -> 
     if not primary_llm:
         logger.warning("Primary LLM not available. Skipping DuckDuckGo verification, returning all results.")
         return ddg_results
+    if not ddg_results:
+        return []
 
     logger.info(f"Verifying {len(ddg_results)} DuckDuckGo results for relevance to claim: '{claim}'")
-    # TODO: Implement LLM call to check relevance of each result's body/title against the claim.
-    # Example structure:
-    # relevant_results = []
-    # for result in ddg_results:
-    #     # Construct prompt for relevance check
-    #     # response = primary_llm.invoke(...)
-    #     # if response indicates relevance:
-    #     #     relevant_results.append(result)
-    # return relevant_results
-    logger.warning("DuckDuckGo verification logic not yet implemented. Returning all results.")
-    return ddg_results # Placeholder: return all results for now
+    relevant_results = []
+    verification_chain = RESULT_VERIFICATION_TEMPLATE | primary_llm
+
+    for result in ddg_results:
+        result_title = result.get('title', '')
+        result_url = result.get('href', '')
+        result_snippet = result.get('body', '') # DuckDuckGo result schema uses 'body'
+
+        if not result_snippet and not result_title:
+            logger.debug(f"Skipping verification for result with no title or snippet: {result_url}")
+            continue # Skip if there's nothing to evaluate
+
+        try:
+            response = verification_chain.invoke({
+                "claim": claim,
+                "result_title": result_title,
+                "result_url": result_url,
+                "result_snippet": result_snippet
+            })
+            # Check if the response content (string) indicates relevance
+            response_text = response.content.strip().lower()
+            if 'relevant' in response_text and 'not relevant' not in response_text:
+                logger.debug(f"Result marked as relevant: {result_url}")
+                relevant_results.append(result)
+            else:
+                logger.debug(f"Result marked as not relevant: {result_url}")
+
+        except Exception as e:
+            logger.error(f"Error verifying DuckDuckGo result '{result_url}': {e}")
+            # Optionally decide whether to include results that caused errors
+            # relevant_results.append(result) # Or skip
+
+    logger.info(f"Finished DuckDuckGo verification. Found {len(relevant_results)} relevant results.")
+    return relevant_results
 
 def verify_news_results(claim: str, news_articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    (Placeholder) Verifies the relevance of NewsAPI results against the original claim using the primary LLM.
+    Verifies the relevance of NewsAPI results against the original claim using the primary LLM.
 
     Args:
         claim: The original claim.
@@ -299,12 +325,44 @@ def verify_news_results(claim: str, news_articles: List[Dict[str, Any]]) -> List
     if not primary_llm:
         logger.warning("Primary LLM not available. Skipping NewsAPI verification, returning all results.")
         return news_articles
+    if not news_articles:
+        return []
 
     logger.info(f"Verifying {len(news_articles)} NewsAPI articles for relevance to claim: '{claim}'")
-    # TODO: Implement LLM call to check relevance of each article's description/content against the claim.
-    # Example structure similar to verify_duckduckgo_results
-    logger.warning("NewsAPI verification logic not yet implemented. Returning all results.")
-    return news_articles # Placeholder: return all articles for now
+    relevant_articles = []
+    verification_chain = RESULT_VERIFICATION_TEMPLATE | primary_llm
+
+    for article in news_articles:
+        result_title = article.get('title', '')
+        result_url = article.get('href', article.get('url', '')) # Use 'href' if standardized, else 'url'
+        result_snippet = article.get('body', article.get('description', article.get('content', ''))) # Use 'body' if standardized
+
+        if not result_snippet and not result_title:
+            logger.debug(f"Skipping verification for article with no title or snippet: {result_url}")
+            continue # Skip if there's nothing to evaluate
+
+        try:
+            response = verification_chain.invoke({
+                "claim": claim,
+                "result_title": result_title,
+                "result_url": result_url,
+                "result_snippet": result_snippet
+            })
+            # Check if the response content (string) indicates relevance
+            response_text = response.content.strip().lower()
+            if 'relevant' in response_text and 'not relevant' not in response_text:
+                logger.debug(f"Article marked as relevant: {result_url}")
+                relevant_articles.append(article)
+            else:
+                logger.debug(f"Article marked as not relevant: {result_url}")
+
+        except Exception as e:
+            logger.error(f"Error verifying NewsAPI article '{result_url}': {e}")
+            # Optionally decide whether to include articles that caused errors
+            # relevant_articles.append(article) # Or skip
+
+    logger.info(f"Finished NewsAPI verification. Found {len(relevant_articles)} relevant articles.")
+    return relevant_articles
 
 def deduplicate_results(results: List[Dict[str, Any]], key: str = 'href') -> List[Dict[str, Any]]:
     """
