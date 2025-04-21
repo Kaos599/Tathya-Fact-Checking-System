@@ -21,49 +21,6 @@ from langchain_community.utilities.wikidata import WikidataAPIWrapper
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Initialize clients using factory functions from config
-# REMOVED: Client initialization moved inside tool functions
-# try:
-#     tavily_client = config.get_tavily_client()
-#     logger.info("Tavily client initialized.")
-# except ValueError as e:
-#     tavily_client = None
-#     logger.warning(f"Failed to initialize Tavily client: {e}")
-#
-# try:
-#     ddg_client = config.get_duckduckgo_client()
-#     logger.info("DuckDuckGo client initialized.")
-# except Exception as e: # Catch broader exceptions if DDGS init fails
-#     ddg_client = None
-#     logger.warning(f"Failed to initialize DuckDuckGo client: {e}")
-#
-# try:
-#     news_client = config.get_news_api_client()
-#     logger.info("NewsAPI client initialized.")
-# except ValueError as e:
-#     news_client = None
-#     logger.warning(f"Failed to initialize NewsAPI client: {e}")
-#
-# try:
-#     wikidata_query_func = config.get_wikidata_client()
-#     logger.info("Wikidata query function obtained.")
-# except Exception as e:
-#     wikidata_query_func = None
-#     logger.warning(f"Failed to obtain Wikidata query function: {e}")
-#
-# try:
-#     primary_llm = config.get_primary_llm()
-#     logger.info("Primary LLM client initialized.")
-# except ValueError as e:
-#     primary_llm = None
-#     logger.error(f"Failed to initialize primary LLM: {e}. Verification steps will fail.")
-#
-# try:
-#     parser_llm = config.get_azure_openai_parser_llm()
-#     logger.info("Azure OpenAI Parser LLM client initialized.")
-# except ValueError as e:
-#     parser_llm = None
-#     logger.error(f"Failed to initialize Azure OpenAI Parser LLM: {e}. Gemini parsing will fail.")
 
 
 # --- Internal Helper Functions (like parsing) ---
