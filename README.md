@@ -91,23 +91,7 @@ The fact-checking process is now driven by the agent's autonomous reasoning:
     pip install -r requirements.txt
     ```
 3.  Set up environment variables by creating a `.env` file in the root directory:
-    ```dotenv
-    # Example .env structure
-    # Choose your primary LLM provider (OpenAI or Azure)
-    # OPENAI_API_KEY=your_openai_api_key
-    # AZURE_OPENAI_ENDPOINT=your_azure_endpoint
-    # AZURE_OPENAI_API_KEY=your_azure_api_key
-    # AZURE_OPENAI_DEPLOYMENT_NAME=your_deployment_name
-    # AZURE_OPENAI_API_VERSION=api_version
-
-    TAVILY_API_KEY=your_tavily_api_key
-    GEMINI_API_KEY=your_gemini_api_key
-    # Optional: Specify Gemini model if not default
-    # GEMINI_MODEL=gemini-1.5-flash
-    NEWS_API_KEY=your_news_api_key
-
-    # You might need other keys depending on specific tool integrations
-    ```
+   
     *Ensure you have the necessary keys for the tools you intend the agent to use.*
 
 ### Running the Application
