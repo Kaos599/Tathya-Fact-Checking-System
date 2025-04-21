@@ -4,19 +4,25 @@ used by the fact-checking system, refactored as Langchain Tools.
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Type
 from . import config  # Import from the current package
 from .models import GeminiParsedOutput # Import the Pydantic model for parsed output
 from .prompts import RESULT_VERIFICATION_TEMPLATE, VERIFICATION_PROMPT # Keep for potential future use or direct calls if needed
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.output_parsers.json import JsonOutputParser
 from langchain_core.exceptions import OutputParserException
-from langchain_core.tools import tool
+from langchain_core.tools import tool, BaseTool, Tool
 from .models import FactCheckResult, EvidenceSource # Make sure this is imported
 from .config import get_primary_llm # Import config helper
 from langchain.tools import BaseTool, Tool
 from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_core.pydantic_v1 import BaseModel, Field # Use v1 for tool compatibility
+from langchain_community.tools import DuckDuckGoSearchRun
+from langchain_community.tools.wikidata.tool import WikidataQueryRun
+from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
 from langchain_community.utilities.wikidata import WikidataAPIWrapper
+from langchain_community.document_loaders import WebBaseLoader # For Web Scraping
+from newsapi import NewsApiClient
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -85,308 +91,408 @@ def parse_gemini_output_with_llm(gemini_raw_output: str, claim: str) -> Optional
         logger.error(f"An unexpected error occurred during Gemini output parsing: {e}")
         return None
 
-# --- Langchain Tools ---
+# --- Tool Input Schemas ---
+
+class SearchInput(BaseModel):
+    query: str = Field(description="The search query string.")
+
+class WikidataInput(BaseModel):
+    query: str = Field(description="A specific entity name (e.g., 'Eiffel Tower') or concept to query Wikidata for structured data.") # Simplified input
+
+class WebScraperInput(BaseModel):
+    urls: List[str] = Field(description="A list of specific, highly relevant URLs to scrape for full content.")
+
+class NewsSearchInput(BaseModel):
+    query: str = Field(description="Keywords or phrase to search for in recent news articles.")
+    language: str = Field(default='en', description="The 2-letter ISO 639-1 code of the language.")
+    page_size: int = Field(default=10, description="Number of news results (max 100).")
+
+
+# --- Claim Decomposition Tool ---
+class ClaimDecompositionInput(BaseModel):
+    claim: str = Field(..., description="The complex claim to decompose into simpler sub-claims.")
+
+class ClaimDecompositionOutput(BaseModel):
+    sub_claims: List[str] = Field(..., description="A list of simpler, verifiable sub-claims derived from the original claim.")
+
+DECOMPOSITION_PROMPT = """
+You are an expert in analyzing claims. Your task is to decompose the given complex claim into a list of simpler, distinct, and verifiable sub-claims or questions. Each sub-claim should represent a single factual assertion that can be independently verified.
+
+Focus on atomicity: Break down the claim into the smallest possible factual units.
+Focus on coverage: Ensure all key aspects of the original claim are covered by the sub-claims.
+Focus on verifiability: Each sub-claim should be a statement or question that can potentially be answered with facts.
+
+Original Claim:
+"{claim}"
+
+Decompose the claim into a list of sub-claims. Provide your response ONLY as a JSON object matching the following schema:
+{{
+    "sub_claims": ["sub-claim 1", "sub-claim 2", ...]
+}}
+"""
+
+class ClaimDecompositionTool(BaseTool):
+    """Tool to decompose complex claims."""
+    name: str = "claim_decomposition_tool"
+    description: str = (
+        "Decomposes a complex claim (containing multiple assertions or entities) into a list of simpler, "
+        "independently verifiable sub-claims or questions. Use this *first* on complex claims to create focused queries for other tools."
+    )
+    args_schema: Type[BaseModel] = ClaimDecompositionInput
+
+    def _run(self, claim: str) -> Dict[str, Any]:
+        """Executes the claim decomposition."""
+        logger.info(f"Executing Claim Decomposition Tool for claim: '{claim}'")
+        llm = get_primary_llm()
+        if not llm:
+            logger.error("Primary LLM not available for Claim Decomposition Tool.")
+            return {"error": "LLM unavailable for decomposition."}
+
+        parser = JsonOutputParser(pydantic_object=ClaimDecompositionOutput)
+        prompt = PromptTemplate(template=DECOMPOSITION_PROMPT, input_variables=["claim"])
+        chain = prompt | llm | parser
+
+        try:
+            result = chain.invoke({"claim": claim})
+            logger.info(f"Claim decomposition successful. Found {len(result.get('sub_claims', []))} sub-claims.")
+            return result
+        except Exception as e:
+            logger.error(f"Error during claim decomposition for '{claim}': {e}", exc_info=True)
+            return {"error": f"Claim decomposition failed: {str(e)}"}
+
+    async def _arun(self, claim: str) -> Dict[str, Any]:
+        """Async execution."""
+        logger.info(f"Executing async Claim Decomposition Tool for claim: '{claim}'")
+        llm = get_primary_llm()
+        if not llm:
+            logger.error("Primary LLM not available for async Claim Decomposition Tool.")
+            return {"error": "LLM unavailable for decomposition."}
+
+        parser = JsonOutputParser(pydantic_object=ClaimDecompositionOutput)
+        prompt = PromptTemplate(template=DECOMPOSITION_PROMPT, input_variables=["claim"])
+        chain = prompt | llm | parser
+
+        try:
+            result = await chain.ainvoke({"claim": claim})
+            logger.info(f"Async claim decomposition successful. Found {len(result.get('sub_claims', []))} sub-claims.")
+            return result
+        except Exception as e:
+            logger.error(f"Error during async claim decomposition for '{claim}': {e}", exc_info=True)
+            return {"error": f"Async claim decomposition failed: {str(e)}"}
+
+
+# --- Search & Retrieval Tools ---
 
 @tool
 def tavily_search(query: str, max_results: int = 5) -> Dict[str, Any]:
     """
-    Performs a web search using the Tavily Search API to find relevant documents and sources for a given query.
-    Returns a dictionary containing a list of search results, including URLs, titles, and content snippets.
-    Use this for general web searches and evidence gathering.
+    Performs a comprehensive web search using Tavily. Ideal for initial investigation of a claim or sub-claim.
+    Returns a list of relevant documents with URLs, titles, and content snippets.
+    Use this first to get a broad overview and identify key sources or entities.
     """
-    tavily_client = config.get_tavily_client() # Get client inside function
+    tavily_client = config.get_tavily_client()
     if not tavily_client:
         logger.error("Tavily client is not available.")
-        # Raise error or return specific structure indicating failure
         return {"error": "Tavily client unavailable."}
     try:
         logger.info(f"Performing Tavily search for query: '{query}'")
+        # Tavily tool from langchain community automatically handles dict -> list conversion if needed
         response = tavily_client.search(query=query, search_depth="advanced", max_results=max_results)
-        logger.info(f"Tavily search completed. Found {len(response.get('results', []))} results.")
-        # Add source tool info to each result for easier tracking later
-        if 'results' in response:
-             for result in response['results']:
+        # Ensure response is a dict suitable for the agent state (Tavily client might return a list)
+        if isinstance(response, list):
+            response_dict = {"results": response}
+        else:
+            response_dict = response
+
+        logger.info(f"Tavily search completed. Found {len(response_dict.get('results', []))} results.")
+        if 'results' in response_dict:
+             for result in response_dict['results']:
                  result['source_tool'] = 'Tavily'
-        return response
+        return response_dict
     except Exception as e:
         logger.error(f"Error during Tavily search for query '{query}': {e}")
         return {"error": f"Tavily search failed: {e}"}
 
-@tool
-def duckduckgo_search(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+@tool(args_schema=WebScraperInput)
+def scrape_webpages_tool(urls: List[str]) -> List[Dict[str, Any]]:
     """
-    Performs a web search using the DuckDuckGo Search API.
-    Returns a list of search result dictionaries, each containing 'title', 'href' (URL), and 'body' (snippet).
-    Useful for alternative web search results or when Tavily doesn't provide enough information.
+    Retrieves the *full text content* from a list of specific URLs.
+    Use this *only* when a search result snippet (from Tavily, DuckDuckGo, etc.) is insufficient but the URL seems highly relevant and promising.
+    This tool is slower and more resource-intensive than reading search snippets.
     """
-    ddg_client = config.get_duckduckgo_client() # Get client inside function
-    if not ddg_client:
-        logger.error("DuckDuckGo client is not available.")
-        return [{"error": "DuckDuckGo client unavailable."}]
+    results = []
+    loader = WebBaseLoader(urls, continue_on_failure=True) # Continue if one URL fails
+    loader.requests_per_second = 2 # Respect rate limits
     try:
-        logger.info(f"Performing DuckDuckGo search for query: '{query}'")
-        results = ddg_client.text(query, max_results=max_results)
-        logger.info(f"DuckDuckGo search completed. Found {len(results)} results.")
-        for result in results:
-            result['source_tool'] = 'DuckDuckGo'
-        return results
-    except Exception as e:
-        logger.error(f"Error during DuckDuckGo search for query '{query}': {e}")
-        return [{"error": f"DuckDuckGo search failed: {e}"}]
+        logger.info(f"Attempting to scrape {len(urls)} URLs: {urls}")
+        docs = loader.load()
+        loaded_data = {doc.metadata.get('source'): doc.page_content for doc in docs}
+        logger.info(f"Successfully loaded content for {len(loaded_data)} URLs.")
 
-@tool
+        for url in urls:
+            content = loaded_data.get(url)
+            if content:
+                results.append({"url": url, "content": content[:5000], "source_tool": "WebScraper"}) # Limit content length
+                logger.info(f"Finished scraping URL: {url}. Content length: {len(content)}")
+            else:
+                error_msg = f"Failed to load or extract content for URL: {url}"
+                results.append({"url": url, "content": error_msg, "error": error_msg, "source_tool": "WebScraper"})
+                logger.warning(error_msg)
+
+    except Exception as e:
+        logger.error(f"Error during scraping URLs {urls}: {e}", exc_info=True)
+        # Append error status for any URLs not already processed
+        processed_urls = {res['url'] for res in results}
+        for url in urls:
+            if url not in processed_urls:
+                results.append({"url": url, "content": f"Scraping failed: {e}", "error": str(e), "source_tool": "WebScraper"})
+    return results
+
+
+@tool(args_schema=NewsSearchInput)
 def news_search(query: str, language: str = 'en', page_size: int = 10) -> Dict[str, Any]:
     """
-    Searches for recent news articles related to a query using the NewsAPI.
-    Returns a dictionary containing a list of articles, including titles, URLs, descriptions, and publication dates.
-    Use this specifically for finding recent news coverage about a topic or claim.
+    Searches *recent news articles* (past ~30 days) related to a query using NewsAPI.
+    Crucial for time-sensitive claims, recent events, or verifying information reported in the news.
+    Returns articles with titles, sources, URLs, snippets, and publication dates.
     """
-    news_client = config.get_news_api_client() # Get client inside function
+    news_client = config.get_news_client()
     if not news_client:
         logger.error("NewsAPI client is not available.")
         return {"error": "NewsAPI client unavailable."}
     try:
-        logger.info(f"Performing NewsAPI search for query: '{query}'")
-        response = news_client.get_everything(q=query, language=language, sort_by='relevancy', page_size=page_size)
-        logger.info(f"NewsAPI search completed. Found {response.get('totalResults', 0)} articles.")
+        logger.info(f"Performing NewsAPI search for query: '{query}', lang: {language}, size: {page_size}")
+        # Use get_everything for broader search, or top_headlines for major news
+        response = news_client.get_everything(
+            q=query,
+            language=language,
+            page_size=min(page_size, 100),
+            sort_by='relevancy' # 'publishedAt' or 'popularity' also options
+        )
+        logger.info(f"NewsAPI search completed. Status: {response.get('status')}, Found {response.get('totalResults', 0)} results.")
         if 'articles' in response:
              for article in response['articles']:
                  article['source_tool'] = 'NewsAPI'
-                 # Standardize keys slightly if needed (e.g., 'url' instead of 'href')
-                 article['href'] = article.get('url')
-                 article['body'] = article.get('description') or article.get('content')
-        else:
-            # Ensure 'articles' key exists even if empty
-            response['articles'] = []
+                 article['snippet'] = article.get('description') or article.get('content') # Standardize snippet
+                 article['title'] = article.get('title')
+                 article['url'] = article.get('url')
         return response
     except Exception as e:
         logger.error(f"Error during NewsAPI search for query '{query}': {e}")
-        return {"error": f"NewsAPI search failed: {e}", "articles": []}
+        return {"error": f"NewsAPI search failed: {e}"}
 
-@tool
-def wikidata_entity_search(query: str, limit: int = 3) -> Dict[str, Any]:
+
+@tool(args_schema=SearchInput)
+def duckduckgo_search(query: str, max_results: int = 5) -> List[Dict[str, str]]:
     """
-    Searches for entities (people, places, organizations, concepts) on Wikidata.
-    Returns a dictionary containing potential matches with descriptions and URIs.
-    Use this to find structured information or confirm details about specific entities mentioned in a claim.
+    Performs a web search using DuckDuckGo. Provides an *alternative search perspective* to Tavily/Google.
+    Useful for corroborating findings or when other search tools yield poor results.
+    Returns a list of result dictionaries, each containing 'title', 'href'(URL), and 'body'(snippet).
     """
-    wikidata_query_func = config.get_wikidata_client() # Get client inside function
-    if not wikidata_query_func:
-        logger.error("Wikidata query function is not available.")
-        return {"error": "Wikidata client unavailable."}
+    # Using the community wrapper directly
+    wrapper = DuckDuckGoSearchAPIWrapper(max_results=max_results)
+    search_tool = DuckDuckGoSearchRun(api_wrapper=wrapper)
     try:
-        logger.info(f"Searching Wikidata for entities matching: '{query}'")
-        results = wikidata_query_func(search_term=query, limit=limit)
-        logger.info(f"Wikidata entity search completed. Found {len(results.get('search', []))} potential matches.")
-        if 'search' in results:
-             for result in results['search']:
-                 result['source_tool'] = 'Wikidata'
-                 # Add standard keys for compatibility if needed
-                 result['title'] = result.get('label')
-                 result['href'] = result.get('concepturi')
-                 result['body'] = result.get('description')
-        else:
-            results['search'] = [] # Ensure key exists
-        return results
+        logger.info(f"Performing DuckDuckGo search for query: '{query}'")
+        # The wrapper now expects a single string and returns a string.
+        # To maintain consistency (returning a list of dicts), we might need to parse or adjust.
+        # Let's try invoking the base wrapper's 'results' method if available, or parse the string.
+        # **Correction**: DuckDuckGoSearchRun itself returns a string. We need the underlying wrapper.
+        # response_str = search_tool.run(query) # This returns a formatted string
+        # Let's use the wrapper directly if possible, or parse the string result
+        results = wrapper.results(query, max_results=max_results)  # This returns List[Dict]
+        logger.info(f"DuckDuckGo search completed. Found {len(results)} results.")
+        # Standardize output fields for agent extraction
+        standardized = []
+        for item in results:
+            # Determine URL from possible keys
+            link = item.get('href') or item.get('link') or item.get('url') or item.get('body')
+            # Determine snippet
+            snippet = item.get('body') or item.get('snippet') or ''
+            standardized_item = {
+                'title': item.get('title', ''),
+                'url': link,
+                'snippet': snippet,
+                'source_tool': 'DuckDuckGo',
+            }
+            # Keep raw content if needed
+            standardized_item['raw_content'] = item
+            standardized.append(standardized_item)
+        return standardized
     except Exception as e:
-        logger.error(f"Error during Wikidata entity search for '{query}': {e}")
-        return {"error": f"Wikidata search failed: {e}", "search": []}
+        logger.error(f"Error during DuckDuckGo search for query '{query}': {e}")
+        return [{"error": f"DuckDuckGo search failed: {e}"}]
 
 
-@tool
-def gemini_google_search_and_parse(claim: str) -> Dict[str, Any]:
+@tool(args_schema=WikidataInput)
+def wikidata_entity_search(query: str) -> Dict[str, Any]:
     """
-    Performs a Google Search via Gemini about a specific claim and parses the output.
-    Returns a dictionary containing a summary, key facts, and source URLs identified by Gemini.
-    Use this for an initial, comprehensive investigation directly addressing the claim.
-    Input should be the claim itself.
+    Retrieves *structured data* about a specific entity (person, place, organization, concept) from Wikidata.
+    Use this *after* identifying a key entity in the claim via other search tools. Input the entity name directly.
+    Returns official labels, descriptions, aliases, and potentially related facts (depending on query complexity handled by the wrapper).
+    NOT suitable for general questions or broad topic searches.
     """
-    logger.info(f"Starting Gemini+Google Search and Parse tool for claim: '{claim}'")
-    raw_gemini_output = config.perform_gemini_google_search(claim) # Get client implicitly via config call
-
-    if raw_gemini_output is None or raw_gemini_output.startswith("Error:"):
-        logger.error(f"Gemini search failed or returned an error: {raw_gemini_output}")
-        return {"error": f"Gemini search failed: {raw_gemini_output}"}
-
-    # Call the internal parsing function
-    parsed_output: Optional[GeminiParsedOutput] = parse_gemini_output_with_llm(raw_gemini_output, claim)
-
-    if parsed_output is None:
-        logger.error("Failed to parse the output from Gemini search.")
-        # Return raw output along with error? Or just error?
-        return {"error": "Failed to parse Gemini output.", "raw_output": raw_gemini_output[:1000]} # Return partial raw for context
-
-    logger.info("Gemini search and parse tool completed successfully.")
-    # Convert Pydantic model to dict for consistent tool output type
-    output_dict = parsed_output.dict()
-    output_dict['source_tool'] = 'Gemini+GoogleSearch'
-    return output_dict
-
-
-# --- Deduplication Helper (Keep as internal utility) ---
-def deduplicate_results(results: List[Dict[str, Any]], key: str = 'href') -> List[Dict[str, Any]]:
-    """
-    Deduplicates a list of result dictionaries based on a specific key (defaulting to 'href' for URL).
-    Internal helper function.
-    """
-    seen = set()
-    unique_results = []
-    for result in results:
-        value = result.get(key)
-        # Ensure value is hashable (e.g., not a list/dict) and not None
-        if value is not None and isinstance(value, (str, int, float, bool, tuple)):
-            if value not in seen:
-                seen.add(value)
-                unique_results.append(result)
-        elif value is None:
-             # Decide whether to keep items with None key
-             # unique_results.append(result) # Option: Keep them
-             pass # Option: Discard them
-        else: # Unhashable type
-            # Try to convert to string or skip
-            try:
-                str_value = str(value)
-                if str_value not in seen:
-                    seen.add(str_value)
-                    unique_results.append(result)
-            except Exception:
-                 logger.warning(f"Could not process value for deduplication key '{key}': {value}. Skipping result.")
-
-
-    logger.info(f"Deduplicated results based on key '{key}'. Original: {len(results)}, Unique: {len(unique_results)}.")
-    return unique_results
-
-# --- Verification functions (Removed from agent flow for now) ---
-# def verify_duckduckgo_results(...) -> ...: ...
-# def verify_news_results(...) -> ...: ...
-
-# --- Placeholder Tool ---
-
-@tool
-def scrape_webpages_tool(urls: List[str]) -> str:
-    """
-    Placeholder tool to simulate scraping web pages. 
-    Takes a list of URLs and returns a generic message indicating content would be scraped.
-    Replace this with a real implementation (e.g., using Playwright or BeautifulSoup).
-    """
-    logger.info(f"Placeholder: Pretending to scrape {len(urls)} URLs: {urls}")
-    # In a real implementation, you'd fetch and parse content here.
-    return f"Scraped content for URLs: {', '.join(urls)}" 
-
-@tool
-def verification_tool(intermediate_steps: list, original_claim: str) -> str:
-    """
-    Verifies the collected evidence and intermediate conclusions against the original claim.
-    Use this tool ONLY when you have gathered sufficient evidence and synthesized a preliminary answer.
-    This tool assesses the consistency, relevance, and sufficiency of the evidence.
-    Provide the original claim and all intermediate steps (tool calls and observations).
-    The intermediate_steps argument should be a list of dictionaries, each with keys 'tool', 'tool_input', and 'observation'.
-    Returns a verification assessment string (e.g., "Evidence supports the claim", "Evidence contradicts the claim", "Evidence is insufficient or mixed").
-    """
-    # Use the specific getter function from config
-    verification_model = config.get_primary_llm()
-    if not verification_model:
-        logger.warning("Verification model (using primary LLM) not configured. Skipping verification.")
-        return "Verification model not configured. Skipping verification."
-
-    # Format the intermediate steps (which are dicts) for the verification prompt
-    formatted_steps = "\n".join([
-        f"Tool Call: {step.get('tool', 'N/A')}({step.get('tool_input', 'N/A')})\nObservation: {step.get('observation', 'N/A')}"
-        for step in intermediate_steps  # Iterate through the list of dictionaries
-    ])
-
-    prompt_content = VERIFICATION_PROMPT.format(
-        claim=original_claim,
-        evidence=formatted_steps
-    )
-
+    api_wrapper = WikidataAPIWrapper()
+    runnable = WikidataQueryRun(api_wrapper=api_wrapper)
     try:
-        response = verification_model.invoke(prompt_content)
-        assessment = response.content if hasattr(response, 'content') else str(response)
-        logging.info(f"Verification Tool Assessment: {assessment}")
-        return assessment
+        logger.info(f"Performing Wikidata entity search for: '{query}'")
+        # Invoke the runnable - it handles basic entity lookup
+        response = runnable.invoke(query)
+        log_response = str(response)[:200] + "..." if isinstance(response, (str, dict, list)) else type(response)
+        logger.info(f"Wikidata search completed. Response: {log_response}")
+
+        # Attempt to structure the response slightly for consistency
+        # WikidataQueryRun often returns a string summary.
+        if isinstance(response, str):
+             # Check if it looks like an error or 'No good Wikidata result found'
+             if "No good Wikidata result found" in response or "Error" in response:
+                 return {"error": response, "source_tool": "Wikidata"}
+             else:
+                 # Assume it's a descriptive summary
+                 return {"summary": response, "source_tool": "Wikidata"}
+        elif isinstance(response, dict): # Should ideally return dict for structured data
+             response['source_tool'] = 'Wikidata'
+             return response
+        elif isinstance(response, list): # Can happen with complex SPARQL implicitly generated
+            return {"results": response, "source_tool": "Wikidata"}
+        else: # Fallback
+            return {"result": str(response), "source_tool": "Wikidata"} # Convert unexpected types to string
+
     except Exception as e:
-        logging.error(f"Error during verification tool execution: {e}")
-        return f"Error during verification: {e}"
+        logger.error(f"Error during Wikidata search for '{query}': {e}", exc_info=True)
+        return {"error": f"Wikidata search failed: {e}", "source_tool": "Wikidata"}
 
 
-def create_agent_tools(config: dict) -> List[BaseTool]:
-    """Creates and returns a list of tools available to the agent."""
+# --- Gemini Tool ---
+class GeminiGoogleSearchInput(BaseModel):
+    query: str = Field(description="The query or sub-claim to investigate using Google Search synthesized by Gemini.")
+
+# Note: This function itself is not decorated with @tool here,
+# but is wrapped by `gemini_google_search_tool` below, which *is* decorated.
+def _gemini_google_search_and_parse_internal(query: str) -> Dict[str, Any]:
+    """Internal logic for Gemini search and parsing."""
+    logger.info(f"Performing Gemini Google Search for query: '{query}'")
+    
+    # --- Call the existing function from config.py to perform the search ---
+    try:
+        raw_gemini_output = config.perform_gemini_google_search(query)
+        
+        if raw_gemini_output is None or raw_gemini_output.startswith("Error:"):
+            logger.error(f"Gemini search failed or returned an error: {raw_gemini_output}")
+            return {"error": f"Gemini search failed: {raw_gemini_output}", "source_tool": "GeminiGoogleSearch"}
+        
+        logger.info("Gemini search successful, attempting to parse output.")
+
+        # --- Call the existing helper function to parse the raw output ---
+        # The original claim (query in this context) is needed for the parser prompt
+        parsed_data: Optional[GeminiParsedOutput] = parse_gemini_output_with_llm(raw_gemini_output, query)
+
+        if parsed_data is None:
+            logger.error("Failed to parse the output from Gemini search.")
+            # Return raw output along with error for context
+            return {"error": "Failed to parse Gemini output.", "raw_output": raw_gemini_output[:1000], "source_tool": "GeminiGoogleSearch"}
+        
+        logger.info("Gemini search and parse completed successfully.")
+        # Convert Pydantic model to dict for consistent tool output type
+        output_dict = parsed_data.dict()
+        output_dict['source_tool'] = 'GeminiGoogleSearch' # Ensure source tool is added
+        return output_dict
+
+    except Exception as e:
+        logger.error(f"Error during Gemini Google Search orchestration for query '{query}': {e}", exc_info=True)
+        return {"error": f"Gemini Google Search orchestration failed: {e}", "source_tool": "GeminiGoogleSearch"}
+
+@tool(args_schema=GeminiGoogleSearchInput)
+def gemini_google_search_tool(query: str) -> Dict[str, Any]:
+    """
+    Performs a Google Search via Gemini, synthesizing results into a summary.
+    Use this for complex questions or sub-claims where an initial LLM synthesis of search results is helpful.
+    Returns a dictionary with the synthesized summary and cited source URLs found by Gemini.
+    """
+    # This tool simply wraps the internal function.
+    return _gemini_google_search_and_parse_internal(query)
+
+
+
+# --- REMOVED Verification Tool ---
+# The verification logic will now be implicitly handled by the agent's decision
+# to call FINISH based on its analysis of gathered evidence.
+
+
+# --- Tool Creation Function ---
+
+def create_agent_tools(cfg: Optional[Dict] = None) -> List[BaseTool]:
+    """Creates a list of tools based on the provided configuration."""
+    if cfg is None:
+        cfg = {}
     tools = []
-    if config.get("enable_tavily", True):
-        try:
-            tavily_search_tool = TavilySearchResults(max_results=config.get("tavily_max_results", 5))
-            tavily_search_tool.name = "tavily_search_results_json" # Default name
-            tools.append(tavily_search_tool)
-            logging.info("Tavily Search tool enabled.")
-        except Exception as e:
-            logging.warning(f"Failed to initialize Tavily Search tool: {e}")
+    logger.info(f"Creating tools with configuration: {cfg}")
 
-    # Add other tools based on config...
-    if config.get("enable_wikidata", False):
-        try:
-            wikidata_tool_wrapper = WikidataAPIWrapper()
-            tools.append(
-                 Tool(
-                    name="Wikidata",
-                    func=wikidata_tool_wrapper.run,
-                    description="Useful for querying Wikidata for structured data about entities, concepts, or facts. Input should be a Wikidata query or entity ID.",
-                )
-            )
-            logging.info("Wikidata tool enabled.")
-        except Exception as e:
-            logging.warning(f"Failed to initialize Wikidata tool: {e}")
+    # Core Tools (Should generally be enabled)
+    if cfg.get("enable_claim_decomposition", True):
+        tools.append(ClaimDecompositionTool())
+        logger.info("Claim Decomposition Tool enabled.")
 
-    if config.get("enable_duckduckgo", False):
-        try:
-            # Requires 'duckduckgo-search' package
-            from langchain_community.tools import DuckDuckGoSearchRun
-            ddg_search = DuckDuckGoSearchRun()
-            tools.append(ddg_search)
-            logging.info("DuckDuckGo Search tool enabled.")
-        except ImportError:
-             logging.warning("DuckDuckGo Search tool requires 'duckduckgo-search'. Skipping.")
-        except Exception as e:
-            logging.warning(f"Failed to initialize DuckDuckGo Search tool: {e}")
+    if cfg.get("enable_tavily", True): # Defaulting Tavily to True as primary search
+        if config.TAVILY_API_KEY:
+            tools.append(tavily_search)
+            logger.info("Tavily Search Tool enabled.")
+        else:
+            logger.warning("Tavily Search Tool requested but TAVILY_API_KEY not set.")
 
-    if config.get("enable_google_search", False):
-        try:
-            # Requires 'google-search-results' package and SERPAPI_API_KEY
-            from langchain_community.tools import GoogleSearchRun
-            google_search = GoogleSearchRun()
-            tools.append(google_search)
-            logging.info("Google Search tool enabled.")
-        except ImportError:
-            logging.warning("Google Search tool requires 'google-search-results'. Skipping.")
-        except Exception as e:
-            logging.warning(f"Failed to initialize Google Search tool: {e} (Ensure SERPAPI_API_KEY is set)")
+    # Optional / Secondary Tools
+    if cfg.get("enable_duckduckgo", True): # Enable DDG as alternative
+        tools.append(duckduckgo_search)
+        logger.info("DuckDuckGo Search Tool enabled.")
 
-    if config.get("enable_web_scraper", True):
-        # Add the placeholder scrape_webpages_tool defined above
+    if cfg.get("enable_wikidata", True): # Enable Wikidata for specific entity lookups
+        tools.append(wikidata_entity_search)
+        logger.info("Wikidata Search Tool enabled.")
+
+    if cfg.get("enable_web_scraper", True): # Enable scraper for deep dives
         tools.append(scrape_webpages_tool)
-        logging.info("Web Scraper tool enabled (Placeholder).")
+        logger.info("Web Scraper Tool enabled.")
 
-    # Add the verification tool
-    if config.get("enable_verification_tool", True):
-        tools.append(verification_tool)
-        logging.info("Verification tool enabled.")
+    if cfg.get("enable_news_search", True): # Enable News for recent events
+        if config.NEWS_API_KEY:
+            tools.append(news_search)
+            logger.info("News Search Tool enabled.")
+        else:
+            logger.warning("News Search Tool requested but NEWS_API_KEY not set.")
 
-    # Add FINISH tool to signal completion and trigger synthesis
-    def finish_func(*args, **kwargs):
-        """No-op tool: signals the agent to finish and synthesize final answer."""
-        return ""
+    if cfg.get("enable_gemini_search", True): # Enable Gemini as another powerful option
+        if config.GEMINI_API_KEY:
+             tools.append(gemini_google_search_tool)
+             logger.info("Gemini Google Search Tool enabled.")
+        else:
+             logger.warning("Gemini Google Search Tool requested but GEMINI_API_KEY not set.")
+
+
+    # --- Add a FINISH tool ---
+    # Represents the agent's decision to end the investigation phase.
+    def finish_func(reason: str = "Investigation complete."): # Add optional reason arg
+        """Signals that the agent has finished all research and analysis, and is ready for the final answer synthesis based on the gathered evidence. Provide a brief reason for finishing."""
+        logger.info(f"Agent signaled FINISH. Reason: {reason}")
+        # The function doesn't need to *do* anything, its invocation signals the graph.
+        return f"FINISH signal received. Reason: {reason}"
+
+    # Define args schema for the FINISH tool
+    class FinishSchema(BaseModel):
+        reason: str = Field(default="Investigation complete.", description="A brief reason why the investigation is being concluded (e.g., 'sufficient evidence found', 'conflicting evidence found', 'searches exhausted').")
+
     tools.append(
         Tool(
             name="FINISH",
             func=finish_func,
-            description="Signal that the agent has finished research and wants to synthesize the final answer."
+            description="Call this ONLY when you have gathered sufficient evidence (or exhausted all relevant search strategies) and are ready to conclude the investigation phase. Provide a brief reason.",
+            args_schema=FinishSchema # Add schema for the reason
         )
     )
-    logging.info("FINISH tool enabled.")
+    logger.info("FINISH tool enabled.")
 
-    if not tools:
-        logging.warning("No tools were enabled for the agent!")
-        # Add a fallback basic search if nothing else is enabled?
-        # tools.append(DuckDuckGoSearchRun()) # Example fallback
+    if not tools or all(t.name == "FINISH" for t in tools): # Check if only FINISH tool is left
+        logging.error("No operational tools were enabled for the agent! It cannot investigate.")
+        raise ValueError("Agent requires at least one operational tool (like search or scrape) besides FINISH.")
 
+    logger.info(f"Total tools created: {len(tools)}")
     return tools

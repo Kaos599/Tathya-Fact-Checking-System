@@ -215,7 +215,10 @@ def generate_final_answer_node(state: AgentState, name: str) -> Dict[str, FactCh
         if obs_data is not None:
             results_list = None
 
-            if tool_name == "tavily_search_results_json" and isinstance(obs_data, list):
+            # Handle search results for various tools
+            if tool_name == "tavily_search" and isinstance(obs_data, dict) and isinstance(obs_data.get('results'), list):
+                results_list = obs_data['results']
+            elif tool_name == "tavily_search_results_json" and isinstance(obs_data, list):
                 results_list = obs_data
             elif tool_name == "duckduckgo_search" and isinstance(obs_data, list):
                  results_list = obs_data
@@ -223,7 +226,7 @@ def generate_final_answer_node(state: AgentState, name: str) -> Dict[str, FactCh
                 results_list = obs_data['articles']
             elif tool_name == "wikidata_entity_search" and isinstance(obs_data, dict) and isinstance(obs_data.get('search'), list):
                  results_list = obs_data['search']
-            elif tool_name == "gemini_google_search_and_parse" and isinstance(obs_data, dict):
+            elif tool_name == "gemini_google_search_tool" and isinstance(obs_data, dict):
                  gemini_sources = obs_data.get('sources', [])
                  logger.info(f"[{name}] Step {step_number}: Extracting sources from Gemini output ({len(gemini_sources)} found).")
                  for idx, url in enumerate(gemini_sources):
@@ -255,7 +258,7 @@ def generate_final_answer_node(state: AgentState, name: str) -> Dict[str, FactCh
                     # Extract common fields, checking multiple possible keys
                     title = item.get('title', item.get('label', f"Source {i+1} from {tool_name}"))
                     snippet = item.get('body', item.get('snippet', item.get('description', item.get('content', 'No Snippet'))))
-                    url = item.get('href', item.get('url', item.get('concepturi'))) # Check common URL keys
+                    url = item.get('href') or item.get('url') or item.get('link') or item.get('concepturi') # Check common URL keys
 
                     logger.debug(f"[{name}] Step {step_number}: Extracted - URL: {url}, Title: {title}, Snippet: {snippet[:50]}...") # DEBUG EXTRACTION
 
