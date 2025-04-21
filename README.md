@@ -46,7 +46,8 @@ Tathya leverages an **agentic architecture**, orchestrated using principles ofte
 
 *The diagram below represents a high-level overview of the components the agent interacts with, rather than a strict linear pipeline.*
 
-![mermaid-diagram-2025-04-19-123124](https://github.com/user-attachments/assets/c249b14b-9a13-4e32-a03a-27bdaca1e8dd)
+![Screenshot 2025-04-21 234829](https://github.com/user-attachments/assets/a44363ee-1374-46b0-9437-75ecd7e4dba2)
+
 
 ## ⚙️ How the System Works (Agentic Flow)
 
