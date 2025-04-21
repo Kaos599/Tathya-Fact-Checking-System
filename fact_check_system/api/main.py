@@ -60,56 +60,78 @@ def run_background_fact_check(task_id: str, claim: str, language: str):
     """Runs the fact check and stores the result."""
     logger.info(f"Background task started for task_id: {task_id}, claim: '{claim}'")
     try:
+        # Run the fact check using the updated function
         fact_check_result: FactCheckResult = run_fact_check(claim)
         logger.info(f"Background task completed for task_id: {task_id}. Verdict: {fact_check_result.verdict}")
 
-        # --- Rebuild the source list correctly as List[Dict[str, Any]] ---
+        # --- Rebuild the source list correctly as List[Dict[str, Any]] --- #
+        # The result from run_fact_check should now be a FactCheckResult object
+        # containing EvidenceSource objects (or similar dicts) with potentially
+        # pre-populated source_tool info.
         response_sources = []
         if fact_check_result.evidence_sources:
             for source in fact_check_result.evidence_sources:
                 source_dict = {}
+                tool_name = "Unknown"
+                title = "No Title"
+                snippet = "No snippet available"
+                url = None
+
                 if isinstance(source, EvidenceSource):
-                    source_dict['url'] = getattr(source, 'url', None)
-                    source_dict['title'] = getattr(source, 'title', getattr(source, 'url', 'No Title'))
-                    source_dict['snippet'] = getattr(source, 'snippet', 'No snippet available')
-                    tool_name = getattr(source, 'source_tool', 'Unknown')
-                    # Simplified tool name mapping for brevity
-                    if tool_name.startswith('Tavily'): tool_name = 'Tavily Search'
-                    elif tool_name == 'Wikidata': tool_name = 'Wikidata'
-                    elif tool_name == 'DuckDuckGo': tool_name = 'DuckDuckGo'
-                    elif tool_name.startswith('Gemini'): tool_name = 'Google AI'
-                    source_dict['tool'] = tool_name
+                    url = getattr(source, 'url', None)
+                    title = getattr(source, 'title', url or 'No Title')
+                    snippet = getattr(source, 'snippet', 'No snippet available')
+                    # Use the source_tool if provided by the agent
+                    tool_name = getattr(source, 'source_tool', tool_name)
+                    # Simple heuristic if still unknown
+                    if tool_name == "Unknown" and url and "tavily" in url:
+                        tool_name = "Tavily Search"
+                    elif tool_name == "Unknown" and url and "wikidata" in url:
+                        tool_name = "Wikidata"
+                    elif tool_name == "Unknown" and url and "duckduckgo" in url:
+                        tool_name = "DuckDuckGo"
+                    # Add more heuristics if needed
+
                 elif isinstance(source, dict):
-                    source_dict['url'] = source.get('url')
-                    source_dict['title'] = source.get('title', source.get('url', 'No Title'))
-                    source_dict['snippet'] = source.get('snippet', 'No snippet available')
-                    tool_name = source.get('source_tool', 'Unknown')
-                    if tool_name.startswith('Tavily'): tool_name = 'Tavily Search'
-                    elif tool_name == 'Wikidata': tool_name = 'Wikidata'
-                    elif tool_name == 'DuckDuckGo': tool_name = 'DuckDuckGo'
-                    elif tool_name.startswith('Gemini'): tool_name = 'Google AI'
-                    source_dict['tool'] = tool_name
-                elif isinstance(source, str) and source.startswith('http'):
+                    url = source.get('url')
+                    title = source.get('title', url or 'No Title')
+                    snippet = source.get('snippet', 'No snippet available')
+                    # Use the source_tool if provided
+                    tool_name = source.get('source_tool', tool_name)
+                    # Heuristics again
+                    if tool_name == "Unknown" and url and "tavily" in url:
+                        tool_name = "Tavily Search"
+                    elif tool_name == "Unknown" and url and "wikidata" in url:
+                        tool_name = "Wikidata"
+                    elif tool_name == "Unknown" and url and "duckduckgo" in url:
+                        tool_name = "DuckDuckGo"
+
+                elif isinstance(source, str) and source.startswith('http'): # Handle plain URLs if they sneak through
+                    url = source
+                    title = source
+                    snippet = 'No preview available'
                     tool_name = "Web Source"
                     try:
                         from urllib.parse import urlparse
                         domain = urlparse(source).netloc
                         if domain: tool_name = domain.replace('www.', '')
                     except: pass
-                    source_dict['url'] = source
-                    source_dict['title'] = source
-                    source_dict['snippet'] = 'No preview available'
-                    source_dict['tool'] = tool_name
                 else:
                     logger.warning(f"Task {task_id}: Skipping source of unexpected type: {type(source)}")
                     continue
 
-                if source_dict.get('url'):
+                if url:
+                    source_dict['url'] = url
+                    source_dict['title'] = title
+                    source_dict['snippet'] = snippet
+                    source_dict['tool'] = tool_name # Assign the determined tool name
                     response_sources.append(source_dict)
                 else:
-                     logger.warning(f"Task {task_id}: Skipping source with no URL: {source_dict.get('title')}")
+                     logger.warning(f"Task {task_id}: Skipping source with no URL: {title}")
+        else:
+            logger.info(f"Task {task_id}: No evidence sources found in the FactCheckResult.")
 
-        # Prepare response data
+        # Prepare response data using the FactCheckResult fields
         response_data = {
             "claim": claim,
             "result": fact_check_result.verdict or "Uncertain",

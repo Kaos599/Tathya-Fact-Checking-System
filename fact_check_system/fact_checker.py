@@ -1,210 +1,150 @@
 """
-Main orchestrator for the fact-checking process.
+Main orchestrator for the fact-checking process using a LangGraph agent.
 """
 
 import logging
 import uuid
+import json # Needed to parse final JSON output
 from typing import List, Dict, Any, Optional
+import os # Import os to read env var for recursion limit
 
-from pydantic import BaseModel, Field # Import BaseModel and Field
+# Keep Pydantic for the final result structure if desired
+from pydantic import BaseModel, Field, ValidationError
 
-from . import config, tools, prompts, models
-from .models import FactCheckResult, EvidenceSource, GeminiParsedOutput
-from langchain_core.output_parsers import JsonOutputParser, StrOutputParser, ListOutputParser
-from langchain_core.runnables import RunnableParallel, RunnablePassthrough
+# Removed old imports like specific prompts, parsers, runnables
+
+# Import the agent builder and state definition
+# Removed unused imports: build_agent_executor, AgentState
+# Import the final result models (keep or adapt)
+from .models import FactCheckResult, EvidenceSource # Keep EvidenceSource for structure
+# Import message types for checking final state
+from langchain_core.messages import AIMessage, HumanMessage
+
+# Import the new agent graph and config
+from .agent import create_fact_checking_agent_graph
+# Import the FactCheckResult schema from schemas if it's defined there,
+# otherwise rely on the models import. Let's assume models for now.
+# from .schemas import FactCheckResult # Or from .models
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Define Pydantic model for the decomposition output
-class DecompositionOutput(BaseModel):
-    decomposition: List[str] = Field(description="List of distinct, meaningful components extracted from the claim for verification.")
+# Removed DecompositionOutput model
+# Removed format_evidence_for_prompt function
 
-def format_evidence_for_prompt(evidence_list: List[EvidenceSource]) -> str:
-    """Formats the collected evidence into a string suitable for the final prompt."""
-    formatted = ""
-    for i, evidence in enumerate(evidence_list):
-        formatted += f"Evidence {i+1} (Source: {evidence.source_tool}):\n"
-        if evidence.title: formatted += f"  Title: {evidence.title}\n"
-        if evidence.url: formatted += f"  URL: {evidence.url}\n"
-        if evidence.snippet: formatted += f"  Snippet: {evidence.snippet[:500]}...\n"
-        # Optionally include key facts from Gemini parsed output
-        if isinstance(evidence.raw_content, dict) and evidence.source_tool == 'Gemini+GoogleSearch':
-             if 'key_facts' in evidence.raw_content and evidence.raw_content['key_facts']:
-                 formatted += f"  Key Facts: {'; '.join(evidence.raw_content['key_facts'])}\n"
-        formatted += "---\n"
-    return formatted if formatted else "No evidence was gathered."
+# --- Compile the agent graph once on module load --- #
+try:
+    logger.info("Initializing and compiling the fact-checking agent graph...")
+    fact_checking_agent = create_fact_checking_agent_graph()
+    logger.info("Fact-checking agent graph compiled successfully.")
+except Exception as e:
+    logger.exception("Failed to compile the fact-checking agent graph on startup!")
+    fact_checking_agent = None # Set to None to indicate failure
+# ------------------------------------------------- #
 
-def run_fact_check(claim: str) -> FactCheckResult:
+def run_fact_check(claim: str, config_override: Dict[str, Any] = None) -> FactCheckResult:
     """
-    Runs the complete fact-checking pipeline for a given claim.
+    Runs the fact-checking agent for a given claim.
 
     Args:
-        claim: The claim string to investigate.
+        claim: The claim string to verify.
+        config_override: Optional dictionary to override parts of the graph config for this run.
 
     Returns:
-        A FactCheckResult object containing the verdict, explanation, evidence, etc.
+        A FactCheckResult object containing the verdict, confidence, explanation, and sources.
     """
-    claim_id = f"fc-{uuid.uuid4()}"
-    logger.info(f"Starting fact check for claim_id: {claim_id}, Claim: '{claim}'")
+    claim_id = str(uuid.uuid4())
+    if fact_checking_agent is None:
+        logger.error("Fact-checking agent graph failed to compile. Cannot run fact check.")
+        return FactCheckResult(claim=claim, claim_id=claim_id, verdict="Error", confidence_score=0.0, explanation="Agent graph compilation failed.", evidence_sources=[])
 
-    all_evidence: List[EvidenceSource] = [] # List to store EvidenceSource objects
-    decomposition: Optional[List[str]] = None
+    logger.info(f"Starting fact check run for claim: '{claim}'")
 
-    # TODO: Implement actual LLM call for decomposition using prompts.CLAIM_DECOMPOSITION_TEMPLATE
+    # Prepare initial state for the graph
+    initial_state = {
+        "claim": claim,
+        "claim_id": claim_id,
+        "messages": [HumanMessage(content=f"Fact check this claim: {claim}")]
+        # intermediate_steps and final_result start empty
+    }
+
+    # Configuration for the graph invocation (e.g., recursion limit)
+    # Get recursion limit from env var or use default
     try:
-        if tools.primary_llm:
-            # Use with_structured_output for claim decomposition
-            decomposition_chain = prompts.CLAIM_DECOMPOSITION_TEMPLATE | tools.primary_llm.with_structured_output(DecompositionOutput)
-            decomposition_result = decomposition_chain.invoke({"claim": claim})
-            decomposition = decomposition_result.decomposition # Access the list via the attribute
-            logger.info(f"Claim decomposed by LLM into: {decomposition}")
+        recursion_limit = int(os.getenv("LANGGRAPH_RECURSION_LIMIT", "15"))
+    except ValueError:
+        recursion_limit = 15
+        logger.warning(f"Invalid LANGGRAPH_RECURSION_LIMIT env var. Using default: {recursion_limit}")
+
+    # Apply overrides if provided
+    runtime_config = {"recursion_limit": recursion_limit}
+    if config_override:
+        if "recursion_limit" in config_override:
+            try:
+                 runtime_config["recursion_limit"] = int(config_override["recursion_limit"])
+            except ValueError:
+                 logger.warning(f"Invalid recursion_limit in config_override. Using default/env var value: {runtime_config['recursion_limit']}")
+        # Add other potential runtime overrides here
+        # runtime_config.update(config_override) # Or just update blindly?
+
+    logger.info(f"Invoking agent graph with config: {runtime_config}")
+
+    try:
+        # Invoke the graph
+        final_state = fact_checking_agent.invoke(initial_state, config=runtime_config)
+        logger.info("Agent graph invocation finished.")
+
+        # Extract the final result from the state
+        if final_state and isinstance(final_state, dict) and final_state.get('final_result'):
+            result: FactCheckResult = final_state['final_result']
+            logger.info(f"Successfully extracted FactCheckResult: Verdict='{result.verdict}'")
+            # Ensure the claim field in the result matches the input claim
+            if result.claim != claim:
+                logger.warning(f"Final result claim '{result.claim}' differs from input '{claim}'. Overwriting.")
+                result.claim = claim
+            # Ensure claim_id is set
+            if not getattr(result, 'claim_id', None):
+                result.claim_id = claim_id
+            return result
         else:
-             logger.error("Primary LLM not available, skipping decomposition.")
-             decomposition = [] # Handle case where decomposition is needed but LLM is unavailable
+            logger.error("Agent graph finished but no 'final_result' found in the final state.")
+            # Try to get some info from intermediate steps if available
+            explanation = "Agent execution finished unexpectedly without a final result." 
+            steps = final_state.get("intermediate_steps", []) if isinstance(final_state, dict) else []
+            if steps:
+                explanation += f" Last observation: {steps[-1][1] if steps else 'N/A'}"
+            return FactCheckResult(claim=claim, claim_id=claim_id, verdict="Error", confidence_score=0.0, explanation=explanation, evidence_sources=[])
+
     except Exception as e:
-        logger.error(f"Error during claim decomposition: {e}")
-        decomposition = []
+        logger.exception(f"An error occurred during agent graph execution for claim '{claim}': {e}")
+        return FactCheckResult(claim=claim, claim_id=claim_id, verdict="Error", confidence_score=0.0, explanation=f"Runtime error during fact check: {e}", evidence_sources=[])
 
-    logger.info("Starting evidence gathering phase...")
-    collected_results: List[Dict[str, Any]] = [] # Store raw results before converting to EvidenceSource
-
-    tavily_results = tools.perform_tavily_search(claim)
-    if tavily_results and tavily_results.get('results'):
-        logger.info(f"Got {len(tavily_results['results'])} results from Tavily.")
-        collected_results.extend(tavily_results['results'])
+# --- Example Usage (Directly) ---
+if __name__ == "__main__":
+    test_claim_1 = "The Great Wall of China is visible from the Moon with the naked eye."
+    print(f"\n--- Testing Claim 1: {test_claim_1} ---")
+    result_1 = run_fact_check(test_claim_1)
+    print("\n--- Result 1 ---")
+    print(f"Verdict: {result_1.verdict}")
+    print(f"Confidence: {result_1.confidence_score}")
+    print(f"Explanation: {result_1.explanation}")
+    print("Sources:")
+    if result_1.evidence_sources:
+        for src in result_1.evidence_sources:
+            print(f"  - URL: {src.url}, Title: {src.title}, Tool: {src.source_tool}")
     else:
-        logger.warning("No results or error from Tavily.")
+        print("  No sources provided.")
 
-    gemini_parsed: Optional[GeminiParsedOutput] = tools.perform_gemini_search_and_parse(claim)
-    if gemini_parsed:
-        logger.info(f"Gemini search and parse successful. Summary: {gemini_parsed.summary[:100]}...")
-        
-        # Handle Gemini sources that are direct URLs
-        if gemini_parsed.sources:
-            logger.info(f"Gemini provided {len(gemini_parsed.sources)} URL sources")
-            for url in gemini_parsed.sources:
-                if isinstance(url, str) and url.startswith('http'):
-                    # Create a simple dictionary representation for each URL source
-                    collected_results.append({
-                        'href': url,
-                        'url': url,
-                        'title': url,
-                        'snippet': "Source from Gemini search results",
-                        'source_tool': 'Gemini URL Source'
-                    })
-        
-        # Add the main Gemini response
-        collected_results.append(gemini_parsed.model_dump())
-    else:
-        logger.warning("Gemini search failed or parsing failed.")
-
-    wikidata_queries = decomposition if decomposition else []
-    if not wikidata_queries and claim: # Fallback if decomposition failed
-        # Improved fallback: use the whole claim instead of just the first word
-        wikidata_queries = [claim] 
-        logger.warning(f"Decomposition failed or empty, using full claim for Wikidata: {wikidata_queries}")
-        
-    for term in wikidata_queries:
-        wikidata_results = tools.search_wikidata_entities(term)
-        if wikidata_results and wikidata_results.get('search'):
-            logger.info(f"Got {len(wikidata_results['search'])} results from Wikidata for term '{term}'.")
-            collected_results.extend(wikidata_results['search'])
-
-    # TODO: Optionally generate specific queries for DDG/News based on decomposition using LLM
-    # Fallback here already uses the full claim if decomposition is empty
-    search_queries = decomposition if decomposition else [claim] 
-    if not search_queries:
-         logger.warning("No search terms available for DuckDuckGo/NewsAPI after decomposition failure.")
-
-    ddg_raw_results = []
-    for query in search_queries:
-        ddg_res = tools.perform_duckduckgo_search(query)
-        if ddg_res:
-            logger.info(f"Got {len(ddg_res)} results from DuckDuckGo for query '{query}'.")
-            ddg_raw_results.extend(ddg_res)
-
-    news_raw_results = []
-    for query in search_queries:
-        news_res = tools.perform_news_search(query)
-        if news_res and news_res.get('articles'):
-            logger.info(f"Got {len(news_res['articles'])} articles from NewsAPI for query '{query}'.")
-            news_raw_results.extend(news_res['articles'])
-
-    logger.info("Starting evidence verification phase...")
-    verified_ddg_results = tools.verify_duckduckgo_results(claim, ddg_raw_results)
-    verified_news_results = tools.verify_news_results(claim, news_raw_results)
-
-    collected_results.extend(verified_ddg_results)
-    collected_results.extend(verified_news_results)
-
-    logger.info(f"Collected {len(collected_results)} raw results before deduplication.")
-    unique_raw_results = tools.deduplicate_results(collected_results, key='href')
-    logger.info(f"Have {len(unique_raw_results)} unique results after deduplication.")
-
-    for i, raw_res in enumerate(unique_raw_results):
-        try:
-            source_tool = raw_res.get('source_tool', 'Unknown')
-            snippet = raw_res.get('body') or raw_res.get('content') or raw_res.get('snippet') or raw_res.get('description')
-            
-            if source_tool == 'Gemini+GoogleSearch':
-                 snippet = raw_res.get('summary', 'No summary available')
-                 title = f"Gemini Summary for '{claim[:50]}...'"
-                 url = None
-            else:
-                 title = raw_res.get('title')
-                 url = raw_res.get('href') or raw_res.get('url')
-            
-            evidence = EvidenceSource(
-                id=f"evid-{claim_id}-{i}",
-                source_tool=source_tool,
-                url=url,
-                title=title,
-                snippet=snippet,
-                raw_content=raw_res
-            )
-            all_evidence.append(evidence)
-        except Exception as e:
-             logger.warning(f"Could not format raw result into EvidenceSource: {raw_res}. Error: {e}")
-
-
-    logger.info("Starting final synthesis phase...")
-    formatted_evidence_str = format_evidence_for_prompt(all_evidence)
-
-    verdict = "UNCERTAIN"
-    confidence_score = 0.1
-    explanation = "Synthesis failed or Primary LLM unavailable."
-
-    if tools.primary_llm:
-        try:
-            parser = JsonOutputParser()
-            chain = prompts.FINAL_ANSWER_TEMPLATE | tools.primary_llm | parser
-
-            synthesis_input = {
-                "claim": claim,
-                "formatted_evidence": formatted_evidence_str,
-            }
-            final_result_dict = chain.invoke(synthesis_input)
-
-            verdict = final_result_dict.get("verdict", "UNCERTAIN")
-            confidence_score = float(final_result_dict.get("confidence_score", 0.1))
-            explanation = final_result_dict.get("explanation", "LLM did not provide an explanation.")
-            logger.info(f"Synthesis complete. Verdict: {verdict}, Confidence: {confidence_score}")
-
-        except Exception as e:
-            logger.error(f"Error during final synthesis: {e}. Falling back to default uncertain verdict.")
-    else:
-        logger.error("Primary LLM not available for final synthesis.")
-
-    final_output = FactCheckResult(
-        claim=claim,
-        claim_id=claim_id,
-        verdict=verdict,
-        confidence_score=confidence_score,
-        explanation=explanation,
-        evidence_sources=all_evidence,
-        decomposition=decomposition
-    )
-
-    logger.info(f"Fact check completed for claim_id: {claim_id}. Verdict: {final_output.verdict}")
-    return final_output 
+    # test_claim_2 = "Elon Musk founded Microsoft."
+    # print(f"\n--- Testing Claim 2: {test_claim_2} ---")
+    # result_2 = run_fact_check(test_claim_2)
+    # print("\n--- Result 2 ---")
+    # print(f"Verdict: {result_2.verdict}")
+    # print(f"Confidence: {result_2.confidence_score}")
+    # print(f"Explanation: {result_2.explanation}")
+    # print("Sources:")
+    # if result_2.evidence_sources:
+    #     for src in result_2.evidence_sources:
+    #          print(f"  - URL: {src.url}, Title: {src.title}, Tool: {src.source_tool}")
+    # else:
+    #      print("  No sources provided.") 
