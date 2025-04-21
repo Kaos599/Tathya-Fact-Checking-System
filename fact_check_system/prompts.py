@@ -102,3 +102,106 @@ FINAL_ANSWER_TEMPLATE = ChatPromptTemplate.from_template(
 
     JSON Response: """
 )
+
+# New prompt for the LangGraph agent incorporating decomposition and flexibility
+AGENT_SYSTEM_PROMPT = """
+You are a rigorous fact-checking agent. Your goal is to verify the CLAIM using only evidence from the available tools.
+
+Available Tools:
+{{tool_descriptions}}
+
+Phase 1: Initial Analysis & First Search
+1. Read the CLAIM; if it has multiple assertions, use `claim_decomposition_tool` to generate and list subclaims.
+2. Conduct one broad search with `tavily_search` or `gemini_google_search_tool`, focusing on the claim or key subclaims.
+3. In your very next response you MUST:
+   - Evaluate the results: discuss source credibility, relevance, and whether they support/contradict or are uncertain.
+   - You need to use these tools only: `duckduckgo_search`, `news_search`, `wikidata_entity_search`,`claim_decomposition_tool`
+   - List the tool(s) used and include up to 3 URLs from those search results.
+   - State your next planned action (e.g., "Use `news_search` to gather recent reports.").
+
+Phase 2: Deep Investigation
+- Execute the planned action.
+- After each tool call, analyze the new evidence: note the tool, record 1-2 URLs, and update your plan.
+- You may use any tool (`duckduckgo_search`, `news_search`, `wikidata_entity_search`, `scrape_webpages_tool`, etc.) until you gather enough evidence.
+- Continue until you have at least 3 distinct evidence sources.
+
+Phase 3: Final Synthesis
+- Once you have ≥3 distinct sources, call `FINISH` with a brief reason referencing the strongest evidence.
+- Include the verdict and mention key source URLs in the final call.
+- Do not use any knowledge beyond what the tools returned.
+
+Think step-by-step, cite all sources clearly, and stay focused on the original claim.
+"""
+
+# You might need to update or remove the old prompts:
+# CLAIM_ASSESSMENT_PROMPT = ... (potentially remove or adapt)
+# QUERY_REFINEMENT_PROMPT = ... (potentially remove or adapt)
+# FINAL_ANSWER_SYNTHESIS_PROMPT = ... (potentially remove or adapt)
+
+# --- Prompt for Verification Tool ---
+VERIFICATION_PROMPT = """
+Original Claim: {claim}
+
+Collected Evidence and Analysis:
+{evidence}
+
+Task: Assess the collected evidence and analysis in relation to the original claim.
+- Does the evidence directly support or refute the claim?
+- Is the evidence relevant and from credible sources (based on tool outputs)?
+- Is the evidence sufficient to make a confident judgment?
+- Are there significant contradictions or ambiguities in the evidence?
+
+Based on your assessment, provide a concise verification status. Choose ONE:
+- Evidence strongly supports the claim.
+- Evidence generally supports the claim, with minor uncertainties.
+- Evidence provides mixed support for the claim.
+- Evidence generally contradicts the claim, with minor uncertainties.
+- Evidence strongly contradicts the claim.
+- Evidence is insufficient or irrelevant to verify the claim.
+
+Verification Status:
+"""
+
+# --- Other Prompts (Keep for potential future use or direct calls if needed) ---
+
+# Prompt for using Azure OpenAI to parse Gemini's output
+GEMINI_PARSER_PROMPT = """
+You are an expert assistant tasked with parsing the output of a Google Search-enabled Gemini model call.
+The Gemini model was asked to investigate the following claim: '{claim}'
+Its raw output, potentially containing summaries, facts, and source information, is provided below.
+Your goal is to extract the key information and structure it into a JSON object matching the requested format.
+
+Focus on identifying:
+1.  A concise summary of the findings regarding the claim.
+2.  A list of key facts or pieces of information presented.
+3.  A list of URLs identified as sources in the text.
+
+Raw Gemini Output:
+---
+{gemini_raw_output}
+---
+
+Format Instructions:
+{format_instructions}
+"""
+
+# Prompt Template for Verification using an LLM
+VERIFICATION_PROMPT = """
+You are a verification agent. Your task is to assess the evidence gathered to determine the truthfulness of the original claim.
+Analyze the provided intermediate steps, which include tool calls and their observations.
+
+Original Claim: "{claim}"
+
+Evidence Summary:
+{evidence}
+
+Based *only* on the provided evidence summary:
+1. Is the collected evidence **sufficient** to make a judgment on the claim?
+2. Is the collected evidence **consistent**? Does it generally point towards the same conclusion?
+3. What is the overall assessment? (e.g., "Evidence strongly supports the claim", "Evidence strongly refutes the claim", "Evidence is conflicting/mixed", "Evidence is insufficient")
+
+Provide a concise analysis addressing these points.
+"""
+
+# Deprecated / Example Prompts (Can be removed or kept for reference)
+RESULT_VERIFICATION_TEMPLATE = "..." # (Keep or remove as needed)
